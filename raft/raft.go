@@ -16,12 +16,15 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
+
+var debug = false
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -165,14 +168,49 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	prs := make(map[uint64]*Progress)
+	raft := &Raft{
+		id:               c.ID,
+		Term:             0,
+		Vote:             -1,
+		RaftLog:          nil,
+		Prs:              prs,
+		State:            StateFollower,
+		votes:            make(map[uint64]bool),
+		msgs:             nil,
+		Lead:             None,
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		leadTransferee:   0,
+	}
+	return raft
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	success := false
+	pr, ok := r.Prs[to]
+	if !ok {
+		//获取不到,
+		return false
+	}
+	if debug {
+		fmt.Printf("id[%d]send append to %d\n", r.id, to)
+		defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
+	}
+	prevLogIndex := pr.Next - 1
+	term := r.Term
+	leaderId := r.id
+	commitIndex := r.RaftLog.committed
+	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
+	if err != nil && prevLogTerm < r.RaftLog.FirstIndex() {
+		//需要发快照....
+		return r.sendSnapShot(to, &success)
+	}
+
+	return success
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
