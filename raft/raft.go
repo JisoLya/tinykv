@@ -17,8 +17,9 @@ package raft
 import (
 	"errors"
 	"fmt"
-
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"math/rand"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -160,6 +161,9 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	//心跳的响应
+	heartBeatResp map[uint64]bool
 }
 
 // newRaft return a raft peer with the given config
@@ -202,30 +206,122 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	prevLogIndex := pr.Next - 1
 	term := r.Term
-	leaderId := r.id
 	commitIndex := r.RaftLog.committed
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
-	if err != nil && prevLogTerm < r.RaftLog.FirstIndex() {
+	firstIndex := r.RaftLog.FirstIndex()
+	if err != nil && prevLogTerm < firstIndex {
 		//需要发快照....
 		return r.sendSnapShot(to, &success)
 	}
 
+	toAppend := make([]*pb.Entry, r.RaftLog.LastIndex()-firstIndex)
+
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		Term:    term,
+		LogTerm: 0,
+		Index:   0,
+		Entries: toAppend,
+		Commit:  commitIndex,
+	}
+	r.msgs = append(r.msgs, msg)
 	return success
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	_, ok := r.Prs[to]
+	if !ok {
+		fmt.Errorf("peer[%d] not in cluster\n", to)
+		return
+	}
+	if debug {
+		fmt.Printf("id[%d]发送HeartBeat to id[%d]\n", r.id, to)
+	}
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgBeat,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Commit:  util.RaftInvalidIndex,
+	}
+	r.msgs = append(r.msgs, msg)
+	return
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	r.electionElapsed++
+	switch r.State {
+	case StateFollower:
+		if r.electionElapsed >= r.electionTimeout {
+			//选举超时
+			r.electionElapsed = 0
+			//开始选举
+			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+			if err != nil {
+				return
+			}
+		}
+	case StateCandidate:
+		if r.electionElapsed >= r.electionTimeout {
+			r.electionElapsed = 0
+			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+			if err != nil {
+				return
+			}
+		}
+	case StateLeader:
+		r.heartbeatElapsed++
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			r.heartbeatElapsed = 0
+			if debug {
+				fmt.Printf("id[%d]执行心跳步骤\n", r.id)
+			}
+			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHeartbeat})
+			if err != nil {
+				return
+			}
+		}
+		if r.electionElapsed >= r.electionTimeout {
+			//选举超时
+			resp := len(r.heartBeatResp)
+			total := len(r.Prs)
+			if resp < total/2 {
+				//收到的响应不足一半
+				r.startElection()
+			}
+			if r.leadTransferee != None {
+				return
+			}
+		}
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	if r.Term > term {
+		return
+	}
+	r.State = StateFollower
+	r.Lead = lead
+	r.Term = term
+	r.Vote = None
+	r.leadTransferee = None
+	r.electionTimeout = rand.Intn(500)
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	r.votes = make(map[uint64]bool)
+	r.heartBeatResp = make(map[uint64]bool)
+	r.heartBeatResp[r.id] = true
+	if debug {
+		fmt.Printf("id[%d].term[%d]成为Follower\n", r.id, r.Term)
+	}
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -274,4 +370,12 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) sendSnapShot(to uint64, b *bool) bool {
+	return true
+}
+
+func (r *Raft) startElection() {
+
 }
