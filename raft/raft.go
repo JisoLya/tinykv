@@ -214,6 +214,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		return r.sendSnapShot(to, &success)
 	}
 
+	//TODO 完成发送日志的拷贝
 	toAppend := make([]*pb.Entry, r.RaftLog.LastIndex()-firstIndex)
 
 	msg := pb.Message{
@@ -327,12 +328,57 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.Term++
+	r.Vote = r.id
+	r.State = StateCandidate
+	r.Lead = None
+	r.votes = make(map[uint64]bool)
+	r.votes[r.id] = true
+	r.electionTimeout = rand.Intn(500)
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	r.heartBeatResp = make(map[uint64]bool)
+	r.heartBeatResp[r.id] = true
+	if debug {
+		fmt.Printf("id[%d].term[%d]成为Candidate\n", r.id, r.Term)
+	}
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	// NOTE: Leader should propose a noop entry on its term
+	// NOTE: Leader should propose a no-op entry on its term
+	//1.设置数据
+	r.State = StateLeader
+	r.Lead = r.id
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	r.leadTransferee = None
+	r.Vote = None
+	r.votes = make(map[uint64]bool)
+	r.heartBeatResp = make(map[uint64]bool)
+	r.heartBeatResp[r.id] = true
+	for pr := range r.Prs {
+		r.Prs[pr].Match = 0
+		//更新为下一个索引
+		r.Prs[pr].Next = r.RaftLog.LastIndex() + 1
+	}
+	//2.发送no-op entry
+	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+		Term:  r.Term,
+		Index: r.RaftLog.LastIndex() + 1,
+		Data:  nil,
+	})
+	//更新自己的match和nextIndex
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	for pr := range r.Prs {
+		if pr != r.id {
+			r.sendAppend(pr)
+		}
+	}
+	//3.执行updateCommitIndex
+	r.updateCommitIndex()
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -341,8 +387,11 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+		r.followerStep(m)
 	case StateCandidate:
+		r.candidateStep(m)
 	case StateLeader:
+		r.leaderStep(m)
 	}
 	return nil
 }
@@ -377,5 +426,128 @@ func (r *Raft) sendSnapShot(to uint64, b *bool) bool {
 }
 
 func (r *Raft) startElection() {
+
+}
+
+func (r *Raft) followerStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		if _, ok := r.Prs[r.id]; ok {
+			r.startElection()
+		}
+	case pb.MessageType_MsgBeat:
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
+	case pb.MessageType_MsgTimeoutNow:
+		r.electionElapsed = 0
+		r.startElection()
+	}
+}
+
+func (r *Raft) candidateStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.startElection()
+	case pb.MessageType_MsgBeat:
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		total := len(r.Prs)
+		//赞同投票数
+		agree := 0
+		r.votes[m.From] = !m.Reject
+		for _, vote := range r.votes {
+			if vote {
+				agree++
+			}
+		}
+		if agree > total/2 {
+			r.becomeLeader()
+		} else {
+			r.becomeFollower(m.Term, None)
+		}
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
+	case pb.MessageType_MsgTimeoutNow:
+		r.electionElapsed = 0
+		r.startElection()
+	}
+}
+
+func (r *Raft) leaderStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+	case pb.MessageType_MsgBeat:
+		for pr := range r.Prs {
+			if pr != r.id {
+				r.sendHeartbeat(pr)
+			}
+		}
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+		r.handleAppendResponse(m)
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.handleHeartbeatResponse(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.electionElapsed = 0
+		r.startElection()
+	}
+}
+
+func (r *Raft) handleRequestVote(m pb.Message) {
+
+}
+
+func (r *Raft) handleAppendResponse(m pb.Message) {
+
+}
+
+func (r *Raft) handleHeartbeatResponse(m pb.Message) {
+
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+
+}
+
+func (r *Raft) updateCommitIndex() {
 
 }
