@@ -56,7 +56,29 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	if storage == nil {
+		panic("nil storage!")
+		return nil
+	}
+	log := &RaftLog{storage: storage}
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+	lastIndex, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+	entries, err := storage.Entries(firstIndex, lastIndex+1)
+	if err != nil {
+		panic(err)
+	}
+	hardState, _, _ := storage.InitialState()
+	log.applied = firstIndex - 1
+	log.committed = hardState.Commit
+	log.stabled = lastIndex
+	log.entries = entries
+	return log
 }
 
 // We need to compact the log entries in some point of time like
@@ -71,6 +93,7 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
+
 	return nil
 }
 
@@ -89,15 +112,33 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) == 0 {
+		index, _ := l.storage.LastIndex()
+		return index
+	}
+	return l.entries[len(l.entries)-1].Index
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
-	return 0
+
+	if len(l.entries) == 0 {
+		index, _ := l.storage.FirstIndex()
+		return index
+	}
+
+	return l.entries[0].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	//TODO 可能需要修改一下
+	if i >= l.FirstIndex() && i < l.LastIndex() {
+		return l.entries[i-l.FirstIndex()].Term, nil
+	}
+	term, err := l.storage.Term(i)
+	if err == nil {
+		return term, nil
+	}
+	return 0, err
 }
