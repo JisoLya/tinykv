@@ -401,7 +401,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		fmt.Printf("id[%d]send HeartBeat to id[%d]\n", r.id, to)
 	}
 	msg := pb.Message{
-		MsgType: pb.MessageType_MsgBeat,
+		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
@@ -451,6 +451,12 @@ func (r *Raft) sendSnapShot(to uint64, b *bool) bool {
 
 func (r *Raft) startElection() {
 	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	if len(r.Prs) == 1 {
+		//应对测试，仅有一个节点的时候直接成为Leader，不需要投票
+		r.becomeLeader()
+		r.Term++
 		return
 	}
 	if debug {
