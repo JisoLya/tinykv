@@ -147,7 +147,8 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 		entsWithConfig(cfg, 2, 1),     // Node 2: Got logs from node 1
 		entsWithConfig(cfg, 3, 2),     // Node 3: Won second election
 		votedWithConfig(cfg, 4, 3, 2), // Node 4: Voted but didn't get logs
-		votedWithConfig(cfg, 5, 3, 2)) // Node 5: Voted but didn't get logs
+		votedWithConfig(cfg, 5, 3, 2), // Node 5: Voted but didn't get logs
+	)
 
 	// Node 1 campaigns. The election fails because a quorum of nodes
 	// know about the election that already happened at term 2. Node 1's
