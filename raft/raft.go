@@ -200,7 +200,7 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0,
 	}
 	if debug {
-		fmt.Printf("初始化Raft: %v\n", raft)
+		fmt.Printf("Initialize Raft: %v\n", raft)
 	}
 	return raft
 }
@@ -274,7 +274,7 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			if debug {
-				fmt.Printf("id[%d]执行心跳步骤\n", r.id)
+				fmt.Printf("id[%d]发送心跳\n", r.id)
 			}
 			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHeartbeat})
 			if err != nil {
@@ -314,7 +314,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
 	if debug {
-		fmt.Printf("id[%d].term[%d]成为Follower\n", r.id, r.Term)
+		fmt.Printf("id[%d]成为Follower at term[%d]\n", r.id, r.Term)
 	}
 }
 
@@ -331,7 +331,7 @@ func (r *Raft) becomeCandidate() {
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
 	if debug {
-		fmt.Printf("id[%d].term[%d]成为Candidate\n", r.id, r.Term)
+		fmt.Printf("id[%d]成为Candidate at term[%d]\n", r.id, r.Term)
 	}
 }
 
@@ -370,7 +370,7 @@ func (r *Raft) becomeLeader() {
 	//3.执行updateCommitIndex
 	r.updateCommitIndex()
 	if debug {
-		fmt.Printf("id[%d].term[%d]成为Leader\n", r.id, r.Term)
+		fmt.Printf("id[%d]成为Leader at term[%d]\n", r.id, r.Term)
 	}
 }
 
@@ -398,7 +398,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		return
 	}
 	if debug {
-		fmt.Printf("id[%d]发送HeartBeat to id[%d]\n", r.id, to)
+		fmt.Printf("id[%d]send HeartBeat to id[%d]\n", r.id, to)
 	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgBeat,
@@ -414,13 +414,14 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	r.electionElapsed = 0
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	if debug {
-		fmt.Printf("id[%d]收到来自id[%d]的心跳信息\n", r.id, m.From)
+		fmt.Printf("id[%d]receive heartbeat from id[%d]\n", r.id, m.From)
 	}
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, m.From)
@@ -453,7 +454,7 @@ func (r *Raft) startElection() {
 		return
 	}
 	if debug {
-		fmt.Printf("id[%d]start election at term[%d]\n", r.id, r.Term)
+		fmt.Printf("id[%d]start election at term[%d]\n", r.id, r.Term+1)
 	}
 	r.becomeCandidate()
 	r.Vote = r.id
@@ -508,18 +509,24 @@ func (r *Raft) candidateStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
+		if debug {
+			fmt.Printf("id[%d] receive requestVoteResp from id[%d] reject = %v\n", r.id, m.From, m.Reject)
+		}
 		total := len(r.Prs)
 		//赞同投票数
 		agree := 0
+		deny := 0
 		r.votes[m.From] = !m.Reject
 		for _, vote := range r.votes {
 			if vote {
 				agree++
+			} else {
+				deny++
 			}
 		}
 		if agree > total/2 {
 			r.becomeLeader()
-		} else {
+		} else if deny > total/2 {
 			r.becomeFollower(m.Term, None)
 		}
 	case pb.MessageType_MsgSnapshot:
@@ -539,6 +546,7 @@ func (r *Raft) candidateStep(m pb.Message) {
 }
 
 func (r *Raft) leaderStep(m pb.Message) {
+	r.heartbeatElapsed++
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
 	case pb.MessageType_MsgBeat:
@@ -579,17 +587,20 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		r.sendRequestVoteResponse(true, m.From)
 		return
 	}
+	if debug {
+		fmt.Printf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
+	}
 	//entry至少是 up-to-date的
 	if r.Vote == None || r.Vote == m.From {
 		lastIndex := r.RaftLog.LastIndex()
 		lastLogTerm, _ := r.RaftLog.Term(lastIndex)
-		if m.LogTerm > lastLogTerm || (m.Term == lastLogTerm && m.Index > lastIndex) {
+		if m.LogTerm >= lastLogTerm || (m.Term == lastLogTerm && m.Index >= lastIndex) {
 			//同意投票
 			r.sendRequestVoteResponse(false, m.From)
 			r.Vote = m.From
 			r.votes[r.id] = true
 			if debug {
-				fmt.Printf("id[%d]投票给id[%d] at term[%d]\n", r.id, m.From, r.Term)
+				fmt.Printf("id[%d]vote for id[%d] at term[%d]\n", r.id, m.From, r.Term)
 			}
 			return
 		} else {
@@ -660,7 +671,6 @@ func (r *Raft) sendRequestVote(to uint64) {
 		fmt.Printf("id[%d]send requestVote to id[%d]\n", r.id, to)
 	}
 	lastIndex := r.RaftLog.LastIndex()
-	fmt.Printf("===%v===", lastIndex)
 	term, _ := r.RaftLog.Term(lastIndex)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
