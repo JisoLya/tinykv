@@ -561,25 +561,35 @@ func (r *Raft) leaderStep(m pb.Message) {
 				r.sendHeartbeat(pr)
 			}
 		}
+		break
 	case pb.MessageType_MsgPropose:
+		r.handlePropose(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+		break
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendResponse(m)
+		break
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+		break
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+		break
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+		break
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
+		break
 	case pb.MessageType_MsgTransferLeader:
 		r.handleTransferLeader(m)
+		break
 	case pb.MessageType_MsgTimeoutNow:
 		r.electionElapsed = 0
 		r.startElection()
+		break
 	}
 }
 
@@ -706,5 +716,19 @@ func (r *Raft) sendHeartbeatResponse(to uint64) {
 		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
+	return
+}
+
+func (r *Raft) handlePropose(m pb.Message) {
+	if debug {
+		fmt.Printf("id[%d] receive propose from id[%d],entry:[%v]\n", r.id, m.From, m.Entries)
+	}
+	lastIndex := r.RaftLog.LastIndex()
+	for i, entry := range m.Entries {
+		entry.Index = lastIndex + 1 + uint64(i)
+		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+	}
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 	return
 }
