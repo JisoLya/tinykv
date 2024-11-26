@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
+	"sort"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -217,28 +218,33 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	if debug {
 		fmt.Printf("id[%d]send append to %d\n", r.id, to)
-		defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
+		//defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
 	}
 	prevLogIndex := pr.Next - 1
 	term := r.Term
 	commitIndex := r.RaftLog.committed
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	firstIndex := r.RaftLog.FirstIndex()
-	if err != nil && prevLogTerm < firstIndex {
+	if err != nil || prevLogIndex < r.RaftLog.FirstIndex()-1 {
 		//需要发快照....
-		return r.sendSnapShot(to, &success)
+		r.sendSnapShot(to)
+		return false
 	}
 
-	//TODO 完成发送日志的拷贝
-	toAppend := make([]*pb.Entry, r.RaftLog.LastIndex()-firstIndex)
-
+	var toAppend []*pb.Entry
+	for i := pr.Next; i < r.RaftLog.LastIndex()+1; i++ {
+		toAppend = append(toAppend, &r.RaftLog.entries[i-firstIndex])
+	}
+	if debug {
+		fmt.Printf("Leader log :=%+v=, to append: =%+v=,len(toAppend) = %d\n", r.RaftLog.entries, toAppend, len(toAppend))
+	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
 		From:    r.id,
 		Term:    term,
-		LogTerm: 0,
-		Index:   0,
+		LogTerm: prevLogTerm,
+		Index:   prevLogIndex,
 		Entries: toAppend,
 		Commit:  commitIndex,
 	}
@@ -414,7 +420,43 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	//处理收到的entry
+	if debug {
+		fmt.Printf("id[%d]receive append from id[%d],msg:=%+v=\n", r.id, m.From, m)
+	}
 	r.electionElapsed = 0
+	if m.Term < r.Term {
+		//响应reject,与自己的term
+		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
+		return
+	}
+	if m.Term > r.Term {
+		if r.State != StateFollower {
+			r.becomeFollower(m.Term, m.From)
+		}
+	}
+	//执行日志复制...
+	lastIndex := r.RaftLog.LastIndex()
+	//firstIndex := r.RaftLog.FirstIndex()
+	for idx, entry := range m.Entries {
+		pos := lastIndex + 1 + uint64(idx)
+		entry.Index = pos
+		entry.Term = r.Term
+		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+	}
+	//更新commit
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+	if debug {
+		fmt.Printf("id[%d]after append log:=%+v=\n", r.id, r.RaftLog.entries)
+	}
+	//响应拼接成功的情况下响应最后一条Index
+	r.sendAppendResp(m.From, r.RaftLog.LastIndex(), false)
+	return
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -445,7 +487,7 @@ func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 }
 
-func (r *Raft) sendSnapShot(to uint64, b *bool) bool {
+func (r *Raft) sendSnapShot(to uint64) bool {
 	return true
 }
 
@@ -604,7 +646,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		return
 	}
 	if debug {
-		fmt.Printf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
+		fmt.Printf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%+v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
 	}
 	//entry至少是 up-to-date的
 	if r.Vote == None || r.Vote == m.From {
@@ -636,7 +678,36 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	if debug {
+		fmt.Printf("id[%d]receive appendResp from id[%d],message:=%+v=\n", r.id, m.From, m)
+	}
+	if m.Reject {
+		//被拒绝,重试发送
+		r.Prs[m.From].Match = m.Index
+		r.Prs[m.From].Next = m.Index + 1
+		r.sendAppend(m.From)
+		return
+	}
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		return
+	}
+	//收到响应更新
+	r.Prs[m.From].Match = m.Index
+	r.Prs[m.From].Next = m.Index + 1
+	oldCommit := r.RaftLog.committed
+	r.updateCommitIndex()
 
+	if oldCommit != r.RaftLog.committed {
+		for pr := range r.Prs {
+			if pr != r.id {
+				r.sendAppend(pr)
+			}
+		}
+	}
 }
 
 func (r *Raft) handleHeartbeatResponse(m pb.Message) {
@@ -661,7 +732,30 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 }
 
 func (r *Raft) updateCommitIndex() {
-
+	//有过半的Node 的matchIndex达到了n 那么更新commit = n
+	match := make(uint64Slice, len(r.Prs))
+	idx := 0
+	//获取所有的matchIndex
+	for _, pr := range r.Prs {
+		match[idx] = pr.Match
+		idx++
+	}
+	sort.Sort(match)
+	if debug {
+		fmt.Printf("match={%v}\n", match)
+	}
+	half := match[len(r.Prs)/2]
+	N := half
+	for ; N > r.RaftLog.committed; N-- {
+		if term, _ := r.RaftLog.Term(N); term == r.Term {
+			break
+		}
+	}
+	r.RaftLog.committed = N
+	if debug {
+		fmt.Printf("id[%d]update commit to %d\n", r.id, N)
+	}
+	return
 }
 
 func (r *Raft) sendRequestVoteResponse(reject bool, from uint64) {
@@ -721,14 +815,36 @@ func (r *Raft) sendHeartbeatResponse(to uint64) {
 
 func (r *Raft) handlePropose(m pb.Message) {
 	if debug {
-		fmt.Printf("id[%d] receive propose from id[%d],entry:[%v]\n", r.id, m.From, m.Entries)
+		fmt.Printf("id[%d] receive propose,entry:[%+v]\n", r.id, m.Entries)
 	}
 	lastIndex := r.RaftLog.LastIndex()
 	for i, entry := range m.Entries {
 		entry.Index = lastIndex + 1 + uint64(i)
+		entry.Term = r.Term
 		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 	}
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	if debug {
+		fmt.Printf("id[%d]current log:=%+v=", r.id, r.RaftLog)
+	}
+	for pr := range r.Prs {
+		if pr != r.id {
+			r.sendAppend(pr)
+		}
+	}
+	return
+}
+
+func (r *Raft) sendAppendResp(to uint64, index uint64, reject bool) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Index:   index,
+		Reject:  reject,
+	}
+	r.msgs = append(r.msgs, msg)
 	return
 }
