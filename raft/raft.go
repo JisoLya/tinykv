@@ -441,6 +441,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//执行日志复制...
 	lastIndex := r.RaftLog.LastIndex()
 	//firstIndex := r.RaftLog.FirstIndex()
+	//TODO 这部分存在问题
 	for idx, entry := range m.Entries {
 		pos := lastIndex + 1 + uint64(idx)
 		entry.Index = pos
