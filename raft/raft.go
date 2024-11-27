@@ -26,7 +26,7 @@ import (
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 
-var debug = true
+var debug = false
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -282,7 +282,7 @@ func (r *Raft) tick() {
 			if debug {
 				fmt.Printf("id[%d]发送心跳\n", r.id)
 			}
-			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHeartbeat})
+			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 			if err != nil {
 				return
 			}
@@ -313,8 +313,9 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Vote = None
 	r.leadTransferee = None
-	r.electionTimeout = rand.Intn(500)
-	r.electionElapsed = 0
+
+	r.electionTimeout = 10 + rand.Intn(10)
+
 	r.heartbeatElapsed = 0
 	r.votes = make(map[uint64]bool)
 	r.heartBeatResp = make(map[uint64]bool)
@@ -331,8 +332,7 @@ func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Lead = None
 	r.votes = make(map[uint64]bool)
-	r.electionTimeout = rand.Intn(500)
-	r.electionElapsed = 0
+	r.electionTimeout = 10 + rand.Intn(10)
 	r.heartbeatElapsed = 0
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
@@ -433,10 +433,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
 		return
 	}
-	if m.Term > r.Term {
+	if m.Term >= r.Term {
+		r.Term = m.Term
 		if r.State != StateFollower {
 			r.becomeFollower(m.Term, m.From)
 		}
+	}
+	//change leader
+	if m.From != r.Lead {
+		r.Lead = m.From
 	}
 	//执行日志复制...
 	//1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
@@ -523,6 +528,7 @@ func (r *Raft) startElection() {
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
+
 	if len(r.Prs) == 1 {
 		//应对测试，仅有一个节点的时候直接成为Leader，不需要投票
 		r.becomeLeader()
@@ -535,7 +541,6 @@ func (r *Raft) startElection() {
 	r.becomeCandidate()
 	r.Vote = r.id
 	r.votes[r.id] = true
-
 	for pr := range r.Prs {
 		if pr != r.id {
 			r.sendRequestVote(pr)
@@ -546,22 +551,15 @@ func (r *Raft) startElection() {
 func (r *Raft) followerStep(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		if _, ok := r.Prs[r.id]; ok {
-			r.startElection()
-		}
-	case pb.MessageType_MsgBeat:
-	case pb.MessageType_MsgPropose:
+		r.startElection()
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
-	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
-	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
-	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
 		if r.Lead != None {
 			m.To = r.Lead
@@ -577,11 +575,8 @@ func (r *Raft) candidateStep(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
 		r.startElection()
-	case pb.MessageType_MsgBeat:
-	case pb.MessageType_MsgPropose:
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
-	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
@@ -609,7 +604,6 @@ func (r *Raft) candidateStep(m pb.Message) {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
-	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
 		if r.Lead != None {
 			m.To = r.Lead
@@ -624,7 +618,6 @@ func (r *Raft) candidateStep(m pb.Message) {
 func (r *Raft) leaderStep(m pb.Message) {
 	r.heartbeatElapsed++
 	switch m.MsgType {
-	case pb.MessageType_MsgHup:
 	case pb.MessageType_MsgBeat:
 		for pr := range r.Prs {
 			if pr != r.id {
@@ -643,7 +636,6 @@ func (r *Raft) leaderStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 		break
-	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 		break
