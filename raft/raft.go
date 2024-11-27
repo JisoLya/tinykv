@@ -225,7 +225,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	commitIndex := r.RaftLog.committed
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	firstIndex := r.RaftLog.FirstIndex()
-	if err != nil || prevLogIndex < r.RaftLog.FirstIndex()-1 {
+	if err != nil || prevLogIndex < firstIndex-1 {
 		//需要发快照....
 		r.sendSnapShot(to)
 		return false
@@ -439,14 +439,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 	}
 	//执行日志复制...
-	lastIndex := r.RaftLog.LastIndex()
+	//lastIndex := r.RaftLog.LastIndex()
 	//firstIndex := r.RaftLog.FirstIndex()
 	//TODO 这部分存在问题
-	for idx, entry := range m.Entries {
-		pos := lastIndex + 1 + uint64(idx)
-		entry.Index = pos
-		entry.Term = r.Term
-		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+	for _, entry := range m.Entries {
+		//entry.Term = r.Term
+		index := entry.Index
+		if index > r.RaftLog.LastIndex() {
+			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+		}
 	}
 	//更新commit
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()

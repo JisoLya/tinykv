@@ -52,6 +52,8 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	//记录上一次拼接之后的索引，以便增量传输
+	lastAppendIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -102,14 +104,24 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) > 0 {
+		if l.stabled < l.FirstIndex() {
+			return l.entries
+		}
+		if l.stabled-l.FirstIndex()+1 > uint64(len(l.entries)) {
+			//stable的数据超出了此时的log长度
+			return make([]pb.Entry, 0)
+		}
+		return l.entries[l.stabled-l.FirstIndex()+1:]
+	}
+	return make([]pb.Entry, 0)
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	if len(l.entries) > 0 {
-		if l.applied > l.FirstIndex() && l.committed >= l.applied {
+		if l.applied >= l.FirstIndex()-1 && l.committed >= l.applied {
 			return l.entries[l.applied-l.FirstIndex()+1 : l.committed-l.FirstIndex()+1]
 		}
 	}
