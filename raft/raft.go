@@ -439,20 +439,46 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 	}
 	//执行日志复制...
-	//lastIndex := r.RaftLog.LastIndex()
-	//firstIndex := r.RaftLog.FirstIndex()
-	//TODO 这部分存在问题
+	//1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
+	//prevLogIndex != lastLogIndex
+	if debug {
+		fmt.Printf("id[%d]current log: %+v\n", r.id, r.RaftLog.entries)
+	}
+	if m.Index > r.RaftLog.LastIndex() {
+		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
+		return
+	}
+	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm && m.Index == r.RaftLog.LastIndex() {
+		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
+		return
+	}
+	//TODO 这部分存在问题,出现冲突需要覆写
 	for _, entry := range m.Entries {
-		//entry.Term = r.Term
+		//2. If an existing entry conflicts with a new one (same index but different terms),
+		//   delete the existing entry and all that follow it; append any new entries not already in the log.
 		index := entry.Index
 		if index > r.RaftLog.LastIndex() {
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+		}
+		if index <= r.RaftLog.LastIndex() && index >= r.RaftLog.FirstIndex() {
+			//index处于log的index范围中
+			tTerm, _ := r.RaftLog.Term(index)
+			if tTerm != entry.Term {
+				r.RaftLog.entries = r.RaftLog.entries[:index]
+				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+				continue
+			}
 		}
 	}
 	//更新commit
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
-	r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+
+	r.RaftLog.lastAppendIndex = m.Index + uint64(len(m.Entries))
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(m.Commit, r.RaftLog.lastAppendIndex)
+	}
+
 	if debug {
 		fmt.Printf("id[%d]after append log:=%+v=\n", r.id, r.RaftLog.entries)
 	}
@@ -467,7 +493,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	if debug {
 		fmt.Printf("id[%d]receive heartbeat from id[%d]\n", r.id, m.From)
 	}
-	if r.Term < m.Term {
+	if r.Term <= m.Term {
 		r.becomeFollower(m.Term, m.From)
 	}
 	r.electionElapsed = 0
