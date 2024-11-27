@@ -680,7 +680,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	if r.Vote == None || r.Vote == m.From {
 		lastIndex := r.RaftLog.LastIndex()
 		lastLogTerm, _ := r.RaftLog.Term(lastIndex)
-		if m.LogTerm >= lastLogTerm || (m.Term == lastLogTerm && m.Index >= lastIndex) {
+		if (m.Index >= lastIndex && m.LogTerm == lastLogTerm) || m.LogTerm > lastLogTerm {
 			//同意投票
 			r.sendRequestVoteResponse(false, m.From)
 			r.Vote = m.From
@@ -806,7 +806,7 @@ func (r *Raft) sendRequestVote(to uint64) {
 		return
 	}
 	if debug {
-		fmt.Printf("id[%d]send requestVote to id[%d]\n", r.id, to)
+		fmt.Printf("id[%d]send requestVote to id[%d],current log: %+v\n", r.id, to, r.RaftLog.entries)
 	}
 	lastIndex := r.RaftLog.LastIndex()
 	term, _ := r.RaftLog.Term(lastIndex)
