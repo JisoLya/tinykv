@@ -26,7 +26,7 @@ import (
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 
-var debug = false
+var debug = true
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -453,24 +453,31 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
 		return
 	}
-	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm && m.Index == r.RaftLog.LastIndex() {
+
+	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm {
+		//prevLogIndex处日志的term不同，删减
+		//todo 可以优化成二分查找...
+		r.RaftLog.entries = r.RaftLog.entries[:m.Index-1]
 		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
 		return
 	}
-	//TODO 这部分存在问题,出现冲突需要覆写
+
 	for _, entry := range m.Entries {
 		//2. If an existing entry conflicts with a new one (same index but different terms),
 		//   delete the existing entry and all that follow it; append any new entries not already in the log.
 		index := entry.Index
 		if index > r.RaftLog.LastIndex() {
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+			//r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 		}
 		if index <= r.RaftLog.LastIndex() && index >= r.RaftLog.FirstIndex() {
 			//index处于log的index范围中
 			tTerm, _ := r.RaftLog.Term(index)
 			if tTerm != entry.Term {
-				r.RaftLog.entries = r.RaftLog.entries[:index]
+				r.RaftLog.entries = r.RaftLog.entries[:index-1]
 				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+				//需要更新stable，删除了一部分日志
+				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 				continue
 			}
 		}
@@ -721,6 +728,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	oldCommit := r.RaftLog.committed
 	r.updateCommitIndex()
 
+	//发送一个append立刻更新follower的commitIndex
 	if oldCommit != r.RaftLog.committed {
 		for pr := range r.Prs {
 			if pr != r.id {
@@ -764,7 +772,7 @@ func (r *Raft) updateCommitIndex() {
 	if debug {
 		fmt.Printf("match={%v}\n", match)
 	}
-	half := match[len(r.Prs)/2]
+	half := match[(len(r.Prs)-1)/2]
 	N := half
 	for ; N > r.RaftLog.committed; N-- {
 		if term, _ := r.RaftLog.Term(N); term == r.Term {
