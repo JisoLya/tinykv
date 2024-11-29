@@ -26,7 +26,7 @@ import (
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 
-var debug = true
+var debug = false
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -201,7 +201,7 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0,
 	}
 	if debug {
-		fmt.Printf("Initialize Raft: %v\n", raft)
+		fmt.Printf("Initialize Raft: %+v\n", raft)
 	}
 	return raft
 }
@@ -220,7 +220,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		fmt.Printf("id[%d]send append to %d\n", r.id, to)
 		//defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
 	}
-	prevLogIndex := pr.Next - 1
+	prevLogIndex := pr.Match
 	term := r.Term
 	commitIndex := r.RaftLog.committed
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
@@ -457,8 +457,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm {
 		//prevLogIndex处日志的term不同，删减
 		//todo 可以优化成二分查找...
-		r.RaftLog.entries = r.RaftLog.entries[:m.Index-1]
-		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
+		match := r.RaftLog.FindIndexByTerm(tTerm)
+		r.sendAppendResp(m.From, match, true)
 		return
 	}
 
@@ -469,8 +469,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		if index > r.RaftLog.LastIndex() {
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 			//r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
-		}
-		if index <= r.RaftLog.LastIndex() && index >= r.RaftLog.FirstIndex() {
+		} else if index <= r.RaftLog.LastIndex() && index >= r.RaftLog.FirstIndex() {
 			//index处于log的index范围中
 			tTerm, _ := r.RaftLog.Term(index)
 			if tTerm != entry.Term {
@@ -770,7 +769,7 @@ func (r *Raft) updateCommitIndex() {
 	}
 	sort.Sort(match)
 	if debug {
-		fmt.Printf("match={%v}\n", match)
+		fmt.Printf("matchIndex = %v\n", match)
 	}
 	half := match[(len(r.Prs)-1)/2]
 	N := half
@@ -779,7 +778,7 @@ func (r *Raft) updateCommitIndex() {
 			break
 		}
 	}
-	r.RaftLog.committed = N
+	r.RaftLog.committed = max(N, r.RaftLog.committed)
 	if debug {
 		fmt.Printf("id[%d]update commit to %d\n", r.id, N)
 	}
@@ -854,12 +853,17 @@ func (r *Raft) handlePropose(m pb.Message) {
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 	if debug {
-		fmt.Printf("id[%d]current log:=%+v=", r.id, r.RaftLog)
+		fmt.Printf("id[%d]current log:=%+v=\n", r.id, r.RaftLog)
 	}
 	for pr := range r.Prs {
 		if pr != r.id {
 			r.sendAppend(pr)
 		}
+	}
+
+	//为了通过测试，单个节点直接更新commitIndex
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.RaftLog.LastIndex()
 	}
 	return
 }

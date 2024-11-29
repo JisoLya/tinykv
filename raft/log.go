@@ -82,6 +82,7 @@ func newLog(storage Storage) *RaftLog {
 	log.committed = hardState.Commit
 	log.stabled = lastIndex
 	log.entries = entries
+	log.applied = firstIndex - 1
 	return log
 }
 
@@ -163,4 +164,14 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return term, nil
 	}
 	return 0, err
+}
+
+func (l *RaftLog) FindIndexByTerm(term uint64) uint64 {
+	for _, entry := range l.entries {
+		if entry.Term == term {
+			return entry.Index
+		}
+	}
+	//没找到，返回第一个index
+	return l.FirstIndex()
 }
