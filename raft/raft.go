@@ -20,7 +20,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
-	"sort"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -220,7 +219,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		fmt.Printf("id[%d]send append to %d\n", r.id, to)
 		//defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
 	}
-	prevLogIndex := pr.Match
+	prevLogIndex := pr.Next - 1
 	term := r.Term
 	commitIndex := r.RaftLog.committed
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
@@ -454,11 +453,13 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
-	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm {
+	//debug 发现存在空日志的情况，那么直接拼就可以了，跳过这个检测步骤
+	if tTerm, _ := r.RaftLog.Term(m.Index); tTerm != m.LogTerm && len(r.RaftLog.entries) > 0 {
 		//prevLogIndex处日志的term不同，删减
 		//todo 可以优化成二分查找...
 		match := r.RaftLog.FindIndexByTerm(tTerm)
-		r.sendAppendResp(m.From, match, true)
+		r.RaftLog.entries = r.RaftLog.entries[:match]
+		r.sendAppendResp(m.From, match-1, true)
 		return
 	}
 
@@ -760,27 +761,29 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 
 func (r *Raft) updateCommitIndex() {
 	//有过半的Node 的matchIndex达到了n 那么更新commit = n
-	match := make(uint64Slice, len(r.Prs))
-	idx := 0
-	//获取所有的matchIndex
-	for _, pr := range r.Prs {
-		match[idx] = pr.Match
-		idx++
-	}
-	sort.Sort(match)
-	if debug {
-		fmt.Printf("matchIndex = %v\n", match)
-	}
-	half := match[(len(r.Prs)-1)/2]
-	N := half
-	for ; N > r.RaftLog.committed; N-- {
-		if term, _ := r.RaftLog.Term(N); term == r.Term {
+	var commit uint64
+	for i := r.RaftLog.LastIndex(); i > r.RaftLog.committed; i-- {
+		//更新commitIndex的条件
+		condNum := len(r.Prs) / 2
+		num := 0
+		for idx, progress := range r.Prs {
+			if idx == r.id {
+				continue
+			}
+			if tTerm, _ := r.RaftLog.Term(progress.Match); progress.Match >= i && tTerm == r.Term {
+				num++
+			}
+		}
+		if num >= condNum {
+			if debug {
+				fmt.Printf("过半的matchIndex达到了: %d,Leader更新commitIndex\n", commit)
+			}
+			r.RaftLog.committed = i
 			break
 		}
 	}
-	r.RaftLog.committed = max(N, r.RaftLog.committed)
 	if debug {
-		fmt.Printf("id[%d]update commit to %d\n", r.id, N)
+		fmt.Printf("id[%d]update commit to %d\n", r.id, r.RaftLog.committed)
 	}
 	return
 }
@@ -879,4 +882,19 @@ func (r *Raft) sendAppendResp(to uint64, index uint64, reject bool) {
 	}
 	r.msgs = append(r.msgs, msg)
 	return
+}
+
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}
+
+func (r *Raft) softState() SoftState {
+	return SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
 }

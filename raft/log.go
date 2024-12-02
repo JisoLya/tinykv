@@ -82,7 +82,6 @@ func newLog(storage Storage) *RaftLog {
 	log.committed = hardState.Commit
 	log.stabled = lastIndex
 	log.entries = entries
-	log.applied = firstIndex - 1
 	return log
 }
 
@@ -91,6 +90,14 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	index, _ := l.storage.FirstIndex()
+	if len(l.entries) > 0 {
+		if index > l.LastIndex() {
+			l.entries = nil
+		} else if index >= l.FirstIndex() {
+			l.entries = l.entries[index-l.FirstIndex()+1:]
+		}
+	}
 }
 
 // allEntries return all the entries not compacted.
