@@ -308,7 +308,35 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
-	return nil
+	if len(entries) == 0 {
+		return nil
+	}
+	psFirst, err := ps.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+	psLast, err := ps.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+	if entries[0].Index > psFirst {
+		return nil
+	}
+	if entries[len(entries)-1].Index < psFirst {
+		return nil
+	}
+	if entries[0].Index < psFirst {
+		entries = entries[psFirst-entries[0].Index:]
+	}
+
+	for _, entry := range entries {
+		raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entry.Index), &entry)
+	}
+
+	for i := entries[len(entries)-1].Index + 1; i <= psLast; i++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+	}
+	return err
 }
 
 // Apply the peer with given snapshot
@@ -331,7 +359,37 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	return nil, nil
+	kvBatch := new(engine_util.WriteBatch)
+	raftBatch := new(engine_util.WriteBatch)
+
+	var snapResult *ApplySnapResult
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		var err error
+		snapResult, err = ps.ApplySnapshot(&ready.Snapshot, kvBatch, raftBatch)
+		if err != nil {
+			return nil, nil
+		}
+	}
+	err := ps.Append(ready.CommittedEntries, raftBatch)
+
+	//更新peerStorage的状态
+	if len(ready.CommittedEntries) > 0 {
+		lastIdx := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+		lastTerm := ready.CommittedEntries[len(ready.CommittedEntries)-1].Term
+		if lastIdx > ps.raftState.LastIndex {
+			ps.raftState.LastIndex = lastIdx
+			ps.raftState.LastTerm = lastTerm
+		}
+	}
+
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
+	//写入
+	err = raftBatch.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	err = raftBatch.WriteToDB(ps.Engines.Raft)
+	err = kvBatch.WriteToDB(ps.Engines.Kv)
+	return snapResult, err
 }
 
 func (ps *PeerStorage) ClearData() {
