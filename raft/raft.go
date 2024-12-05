@@ -19,13 +19,21 @@ import (
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"log"
 	"math/rand"
 )
 
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 
-var debug = false
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -199,9 +207,9 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		leadTransferee:   0,
 	}
-	if debug {
-		fmt.Printf("Initialize Raft: %+v\n", raft)
-	}
+
+	DPrintf("Initialize Raft: %+v\n", raft)
+
 	return raft
 }
 
@@ -215,10 +223,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 		//获取不到,
 		return false
 	}
-	if debug {
-		fmt.Printf("id[%d]send append to %d\n", r.id, to)
-		//defer fmt.Printf("id[%d]send append to %d success\n", r.id, to)
-	}
+
+	DPrintf("id[%d]send append to %d\n", r.id, to)
+
 	prevLogIndex := pr.Next - 1
 	term := r.Term
 	commitIndex := r.RaftLog.committed
@@ -234,9 +241,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	for i := pr.Next; i < r.RaftLog.LastIndex()+1; i++ {
 		toAppend = append(toAppend, &r.RaftLog.entries[i-firstIndex])
 	}
-	if debug {
-		fmt.Printf("Leader log :=%+v=, to append: =%+v=,len(toAppend) = %d\n", r.RaftLog.entries, toAppend, len(toAppend))
-	}
+	DPrintf("Leader log :=%+v=, to append: =%+v=,len(toAppend) = %d\n", r.RaftLog.entries, toAppend, len(toAppend))
+
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
@@ -278,9 +284,9 @@ func (r *Raft) tick() {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			if debug {
-				fmt.Printf("id[%d]发送心跳\n", r.id)
-			}
+
+			DPrintf("id[%d]发送心跳\n", r.id)
+
 			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 			if err != nil {
 				return
@@ -319,9 +325,9 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.votes = make(map[uint64]bool)
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
-	if debug {
-		fmt.Printf("id[%d]成为Follower at term[%d]\n", r.id, r.Term)
-	}
+
+	DPrintf("id[%d]成为Follower at term[%d]\n", r.id, r.Term)
+
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -335,9 +341,9 @@ func (r *Raft) becomeCandidate() {
 	r.heartbeatElapsed = 0
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
-	if debug {
-		fmt.Printf("id[%d]成为Candidate at term[%d]\n", r.id, r.Term)
-	}
+
+	DPrintf("id[%d]成为Candidate at term[%d]\n", r.id, r.Term)
+
 }
 
 // becomeLeader transform this peer's state to leader
@@ -374,9 +380,9 @@ func (r *Raft) becomeLeader() {
 	}
 	//3.执行updateCommitIndex
 	r.updateCommitIndex()
-	if debug {
-		fmt.Printf("id[%d]成为Leader at term[%d]\n", r.id, r.Term)
-	}
+
+	DPrintf("id[%d]成为Leader at term[%d]\n", r.id, r.Term)
+
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -402,9 +408,9 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		fmt.Errorf("peer[%d] not in cluster\n", to)
 		return
 	}
-	if debug {
-		fmt.Printf("id[%d]send HeartBeat to id[%d]\n", r.id, to)
-	}
+
+	DPrintf("id[%d]send HeartBeat to id[%d]\n", r.id, to)
+
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      to,
@@ -423,9 +429,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 	//处理收到的entry
-	if debug {
-		fmt.Printf("id[%d]receive append from id[%d],msg:=%+v=\n", r.id, m.From, m)
-	}
+
+	DPrintf("id[%d]receive append from id[%d],msg:=%+v=\n", r.id, m.From, m)
+
 	r.electionElapsed = 0
 	if m.Term < r.Term {
 		//响应reject,与自己的term
@@ -445,9 +451,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//执行日志复制...
 	//1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
 	//prevLogIndex != lastLogIndex
-	if debug {
-		fmt.Printf("id[%d]current log: %+v\n", r.id, r.RaftLog.entries)
-	}
+
+	DPrintf("id[%d]current log: %+v\n", r.id, r.RaftLog.entries)
+
 	if m.Index > r.RaftLog.LastIndex() {
 		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
 		return
@@ -491,9 +497,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.RaftLog.committed = min(m.Commit, r.RaftLog.lastAppendIndex)
 	}
 
-	if debug {
-		fmt.Printf("id[%d]after append log:=%+v=\n", r.id, r.RaftLog.entries)
-	}
+	DPrintf("id[%d]after append log:=%+v=\n", r.id, r.RaftLog.entries)
+
 	//响应拼接成功的情况下响应最后一条Index
 	r.sendAppendResp(m.From, r.RaftLog.LastIndex(), false)
 	return
@@ -502,9 +507,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	if debug {
-		fmt.Printf("id[%d]receive heartbeat from id[%d]\n", r.id, m.From)
-	}
+
+	DPrintf("id[%d]receive heartbeat from id[%d]\n", r.id, m.From)
+
 	if r.Term <= m.Term {
 		r.becomeFollower(m.Term, m.From)
 	}
@@ -542,9 +547,9 @@ func (r *Raft) startElection() {
 		r.Term++
 		return
 	}
-	if debug {
-		fmt.Printf("id[%d]start election at term[%d]\n", r.id, r.Term+1)
-	}
+
+	DPrintf("id[%d]start election at term[%d]\n", r.id, r.Term+1)
+
 	r.becomeCandidate()
 	r.Vote = r.id
 	r.votes[r.id] = true
@@ -587,9 +592,9 @@ func (r *Raft) candidateStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
-		if debug {
-			fmt.Printf("id[%d] receive requestVoteResp from id[%d] reject = %v\n", r.id, m.From, m.Reject)
-		}
+
+		DPrintf("id[%d] receive requestVoteResp from id[%d] reject = %v\n", r.id, m.From, m.Reject)
+
 		total := len(r.Prs)
 		//赞同投票数
 		agree := 0
@@ -663,6 +668,7 @@ func (r *Raft) leaderStep(m pb.Message) {
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
+	DPrintf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%+v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, None)
 		//成为Follower后继续向后执行投票逻辑
@@ -672,9 +678,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		r.sendRequestVoteResponse(true, m.From)
 		return
 	}
-	if debug {
-		fmt.Printf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%+v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
-	}
+
 	//entry至少是 up-to-date的
 	if r.Vote == None || r.Vote == m.From {
 		lastIndex := r.RaftLog.LastIndex()
@@ -684,22 +688,17 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 			r.sendRequestVoteResponse(false, m.From)
 			r.Vote = m.From
 			r.votes[r.id] = true
-			if debug {
-				fmt.Printf("id[%d]vote for id[%d] at term[%d]\n", r.id, m.From, r.Term)
-			}
+			DPrintf("id[%d]vote for id[%d] at term[%d]\n", r.id, m.From, r.Term)
 			return
 		} else {
 			r.sendRequestVoteResponse(true, m.From)
-			if debug {
-				fmt.Printf("id[%d]reject vote for id[%d],lagged log!\n", r.id, m.From)
-			}
+			DPrintf("id[%d]reject vote for id[%d],lagged log!\n", r.id, m.From)
 			return
 		}
 	} else {
 		r.sendRequestVoteResponse(true, m.From)
-		if debug {
-			fmt.Printf("id[%d]reject vote for id[%d],having voted!\n", r.id, m.From)
-		}
+		DPrintf("id[%d]reject vote for id[%d],having voted!\n", r.id, m.From)
+
 		return
 	}
 }
@@ -708,9 +707,9 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
-	if debug {
-		fmt.Printf("id[%d]receive appendResp from id[%d],message:=%+v=\n", r.id, m.From, m)
-	}
+
+	DPrintf("id[%d]receive appendResp from id[%d],message:=%+v=\n", r.id, m.From, m)
+
 	if m.Reject {
 		//被拒绝,重试发送
 		r.Prs[m.From].Match = m.Index
@@ -775,16 +774,16 @@ func (r *Raft) updateCommitIndex() {
 			}
 		}
 		if num >= condNum {
-			if debug {
-				fmt.Printf("过半的matchIndex达到了: %d,Leader更新commitIndex\n", commit)
-			}
+
+			DPrintf("过半的matchIndex达到了: %d,Leader更新commitIndex\n", commit)
+
 			r.RaftLog.committed = i
 			break
 		}
 	}
-	if debug {
-		fmt.Printf("id[%d]update commit to %d\n", r.id, r.RaftLog.committed)
-	}
+
+	DPrintf("id[%d]update commit to %d\n", r.id, r.RaftLog.committed)
+
 	return
 }
 
@@ -807,9 +806,9 @@ func (r *Raft) sendRequestVote(to uint64) {
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
-	if debug {
-		fmt.Printf("id[%d]send requestVote to id[%d],current log: %+v\n", r.id, to, r.RaftLog.entries)
-	}
+
+	DPrintf("id[%d]send requestVote to id[%d],current log: %+v\n", r.id, to, r.RaftLog.entries)
+
 	lastIndex := r.RaftLog.LastIndex()
 	term, _ := r.RaftLog.Term(lastIndex)
 	msg := pb.Message{
@@ -844,9 +843,9 @@ func (r *Raft) sendHeartbeatResponse(to uint64) {
 }
 
 func (r *Raft) handlePropose(m pb.Message) {
-	if debug {
-		fmt.Printf("id[%d] receive propose,entry:[%+v]\n", r.id, m.Entries)
-	}
+
+	DPrintf("id[%d] receive propose,entry:[%+v]\n", r.id, m.Entries)
+
 	lastIndex := r.RaftLog.LastIndex()
 	for i, entry := range m.Entries {
 		entry.Index = lastIndex + 1 + uint64(i)
@@ -855,9 +854,9 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
-	if debug {
-		fmt.Printf("id[%d]current log:=%+v=\n", r.id, r.RaftLog)
-	}
+
+	DPrintf("id[%d]current log:=%+v=\n", r.id, r.RaftLog)
+
 	for pr := range r.Prs {
 		if pr != r.id {
 			r.sendAppend(pr)
