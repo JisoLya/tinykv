@@ -17,7 +17,6 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"log"
 	"math/rand"
@@ -265,6 +264,7 @@ func (r *Raft) tick() {
 	case StateFollower:
 		if r.electionElapsed >= r.electionTimeout {
 			//选举超时
+			DPrintf("id[%d].term[%d]一段时间没有收到Leader心跳，开始选举", r.id, r.Term)
 			r.electionElapsed = 0
 			//开始选举
 			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
@@ -274,6 +274,8 @@ func (r *Raft) tick() {
 		}
 	case StateCandidate:
 		if r.electionElapsed >= r.electionTimeout {
+			DPrintf("id[%d].term[%d]选举超时,重新开始选举", r.id, r.Term)
+			//r.becomeFollower(r.Term+1, None)
 			r.electionElapsed = 0
 			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 			if err != nil {
@@ -284,9 +286,7 @@ func (r *Raft) tick() {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-
 			DPrintf("id[%d]发送心跳\n", r.id)
-
 			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 			if err != nil {
 				return
@@ -318,9 +318,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Vote = None
 	r.leadTransferee = None
-
-	r.electionTimeout = 10 + rand.Intn(10)
-
+	r.resetRandomTimeout()
 	r.heartbeatElapsed = 0
 	r.votes = make(map[uint64]bool)
 	r.heartBeatResp = make(map[uint64]bool)
@@ -337,7 +335,7 @@ func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Lead = None
 	r.votes = make(map[uint64]bool)
-	r.electionTimeout = 10 + rand.Intn(10)
+	r.resetRandomTimeout()
 	r.heartbeatElapsed = 0
 	r.heartBeatResp = make(map[uint64]bool)
 	r.heartBeatResp[r.id] = true
@@ -382,7 +380,6 @@ func (r *Raft) becomeLeader() {
 	r.updateCommitIndex()
 
 	DPrintf("id[%d]成为Leader at term[%d]\n", r.id, r.Term)
-
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -416,7 +413,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		Commit:  util.RaftInvalidIndex,
+		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
 	return
@@ -451,9 +448,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//执行日志复制...
 	//1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
 	//prevLogIndex != lastLogIndex
-
 	DPrintf("id[%d]current log: %+v\n", r.id, r.RaftLog.entries)
-
 	if m.Index > r.RaftLog.LastIndex() {
 		r.sendAppendResp(m.From, r.RaftLog.LastIndex(), true)
 		return
@@ -540,7 +535,6 @@ func (r *Raft) startElection() {
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
-
 	if len(r.Prs) == 1 {
 		//应对测试，仅有一个节点的时候直接成为Leader，不需要投票
 		r.becomeLeader()
@@ -592,9 +586,7 @@ func (r *Raft) candidateStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
-
 		DPrintf("id[%d] receive requestVoteResp from id[%d] reject = %v\n", r.id, m.From, m.Reject)
-
 		total := len(r.Prs)
 		//赞同投票数
 		agree := 0
@@ -669,6 +661,8 @@ func (r *Raft) leaderStep(m pb.Message) {
 
 func (r *Raft) handleRequestVote(m pb.Message) {
 	DPrintf("id[%d].term[%d] handling requestVote request from id[%d],current log:[%+v]\n", r.id, r.Term, m.From, r.RaftLog.entries)
+	defer DPrintf("id[%d].term[%d] receive request from id[%d].term[%d] vote return!", r.id, r.Term, m.From, m.Term)
+	//收到requestVote
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, None)
 		//成为Follower后继续向后执行投票逻辑
@@ -698,9 +692,9 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	} else {
 		r.sendRequestVoteResponse(true, m.From)
 		DPrintf("id[%d]reject vote for id[%d],having voted!\n", r.id, m.From)
-
 		return
 	}
+
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
@@ -896,4 +890,8 @@ func (r *Raft) softState() SoftState {
 		Lead:      r.Lead,
 		RaftState: r.State,
 	}
+}
+
+func (r *Raft) resetRandomTimeout() {
+	r.electionTimeout = 10 + rand.Intn(10)
 }
