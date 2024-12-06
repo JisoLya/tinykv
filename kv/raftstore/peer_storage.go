@@ -319,13 +319,12 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if err != nil {
 		panic(err)
 	}
-	if entries[0].Index > psFirst {
+	enFirstIndex := entries[0].Index
+	enLastIndex := entries[len(entries)-1].Index
+	if enLastIndex < psFirst {
 		return nil
 	}
-	if entries[len(entries)-1].Index < psFirst {
-		return nil
-	}
-	if entries[0].Index < psFirst {
+	if enFirstIndex < psFirst {
 		entries = entries[psFirst-entries[0].Index:]
 	}
 
@@ -376,6 +375,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if len(ready.CommittedEntries) > 0 {
 		lastIdx := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
 		lastTerm := ready.CommittedEntries[len(ready.CommittedEntries)-1].Term
+
 		if lastIdx > ps.raftState.LastIndex {
 			ps.raftState.LastIndex = lastIdx
 			ps.raftState.LastTerm = lastTerm

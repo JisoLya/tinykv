@@ -193,6 +193,7 @@ func (m *MockSchedulerClient) GetRegion(ctx context.Context, key []byte) (*metap
 }
 
 func (m *MockSchedulerClient) getRegionLocked(key []byte) (*metapb.Region, *metapb.Peer) {
+	//log.Infof("key in getRegionLocked func:%v", hex.EncodeToString(key))
 	result := m.findRegion(key)
 	if result == nil {
 		return nil, nil
