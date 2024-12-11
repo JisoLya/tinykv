@@ -324,8 +324,9 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if enLastIndex < psFirst {
 		return nil
 	}
+
 	if enFirstIndex < psFirst {
-		entries = entries[psFirst-entries[0].Index:]
+		entries = entries[psFirst-enFirstIndex:]
 	}
 
 	for _, entry := range entries {
@@ -335,6 +336,9 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	for i := entries[len(entries)-1].Index + 1; i <= psLast; i++ {
 		raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
 	}
+	ps.raftState.LastIndex = psLast
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
+
 	return err
 }
 
@@ -369,12 +373,12 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			return nil, nil
 		}
 	}
-	err := ps.Append(ready.CommittedEntries, raftBatch)
+	err := ps.Append(ready.Entries, raftBatch)
 
 	//更新peerStorage的状态
 	if len(ready.CommittedEntries) > 0 {
-		lastIdx := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
-		lastTerm := ready.CommittedEntries[len(ready.CommittedEntries)-1].Term
+		lastIdx := ready.Entries[len(ready.Entries)-1].Index
+		lastTerm := ready.Entries[len(ready.Entries)-1].Term
 
 		if lastIdx > ps.raftState.LastIndex {
 			ps.raftState.LastIndex = lastIdx

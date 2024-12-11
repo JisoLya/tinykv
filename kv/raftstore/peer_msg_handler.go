@@ -38,11 +38,31 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+// HandleRaftReady
+// 1. 判断是否ready，如果没有ready则直接return
+// 2. 保存这个readyState
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
 	// Your Code Here (2B).
+	rawNode := d.RaftGroup
+	if !rawNode.HasReady() {
+		return
+	}
+	ready := rawNode.Ready()
+	applySnapResult, err := d.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		return
+	}
+	if applySnapResult != nil {
+		//应用快照
+		return
+	}
+	if len(ready.Messages) != 0 {
+		d.Send(d.ctx.trans, ready.Messages)
+	}
+
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -223,9 +243,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// / Checks if the message is sent to the correct peer.
+// /
+// / Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)

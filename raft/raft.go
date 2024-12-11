@@ -360,7 +360,6 @@ func (r *Raft) becomeLeader() {
 	}
 	//3.执行updateCommitIndex
 	r.updateCommitIndex()
-
 	DPrintf("id[%d]成为Leader at term[%d]\n", r.id, r.Term)
 }
 
@@ -452,7 +451,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			//index处于log的index范围中
 			tTerm, _ := r.RaftLog.Term(index)
 			if tTerm != entry.Term {
-				r.RaftLog.entries = r.RaftLog.entries[:index-1]
+				r.RaftLog.entries = r.RaftLog.entries[:index-1-r.RaftLog.FirstIndex()]
 				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 				//需要更新stable，删除了一部分日志
 				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
