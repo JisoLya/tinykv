@@ -1,20 +1,43 @@
 package standalone_storage
 
 import (
+	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/config"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
+	"path"
 )
 
 // StandAloneStorage is an implementation of `Storage` for a single-node TinyKV instance. It does not
 // communicate with other nodes and all data is stored locally.
 type StandAloneStorage struct {
 	// Your Data Here (1).
+	engine *engine_util.Engines
+	conf   *config.Config
+}
+
+type StandAloneStorageReader struct {
+	KvTxn *badger.Txn
 }
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
-	return nil
+	dbPath := conf.DBPath
+
+	kvPath := path.Join(dbPath, "kv")
+	rfPath := path.Join(dbPath, "rf")
+
+	kvDB := engine_util.CreateDB(kvPath, false)
+	rfDB := engine_util.CreateDB(rfPath, true)
+
+	engines := engine_util.NewEngines(kvDB, rfDB, kvPath, rfPath)
+
+	store := &StandAloneStorage{
+		engine: engines,
+		conf:   conf,
+	}
+	return store
 }
 
 func (s *StandAloneStorage) Start() error {
@@ -29,10 +52,43 @@ func (s *StandAloneStorage) Stop() error {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	// Your Code Here (1).
-	return nil, nil
+	txn := s.engine.Kv.NewTransaction(false)
+	return NewStandAloneStorageReader(txn), nil
 }
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
 	// Your Code Here (1).
+	//func PutCF(engine *badger.DB, cf string, key []byte, val []byte)
+	var err error
+	for _, b := range batch {
+		key, val, cf := b.Key(), b.Value(), b.Cf()
+		if _, ok := b.Data.(storage.Put); ok {
+			err = engine_util.PutCF(s.engine.Kv, cf, key, val)
+		} else {
+			err = engine_util.DeleteCF(s.engine.Kv, cf, key)
+		}
+	}
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func NewStandAloneStorageReader(txn *badger.Txn) *StandAloneStorageReader {
+	return &StandAloneStorageReader{
+		KvTxn: txn,
+	}
+}
+
+func (r *StandAloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
+	//todo 完成读取
+	return nil, nil
+}
+
+func (r *StandAloneStorageReader) IterCF(cf string) engine_util.DBIterator {
+
+	return nil
+}
+func (r *StandAloneStorageReader) Close() {
+	r.KvTxn.Discard()
 }
