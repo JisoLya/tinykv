@@ -18,9 +18,9 @@ import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 
 // RaftLog manage the log entries, its struct look like:
 //
-//  snapshot/first.....applied....committed....stabled.....last
-//  --------|------------------------------------------------|
-//                            log entries
+//	snapshot/first.....applied....committed....stabled.....last
+//	--------|------------------------------------------------|
+//	                          log entries
 //
 // for simplify the RaftLog implement should manage all log entries
 // that not truncated
@@ -56,7 +56,36 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	//
+	hardState, _, err := storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+	lastIndex, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+	//由于是左闭右开区间，所以是lastIndex + 1
+	// Entries returns a slice of log entries in the range [lo,hi).
+	entries, err := storage.Entries(firstIndex, lastIndex+1)
+	if err != nil {
+		panic(err)
+	}
+	/*
+		todo pendingSnapShot 暂不读取
+		conf state也没有读取
+	*/
+	return &RaftLog{
+		storage:   storage,
+		committed: hardState.Commit,
+		applied:   firstIndex - 1,
+		stabled:   lastIndex,
+		entries:   entries,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -71,13 +100,14 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	return l.entries
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	stableIdx := l.stabled
+	return l.entries[stableIdx+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
