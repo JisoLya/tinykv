@@ -50,6 +50,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	dummyIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -107,23 +108,42 @@ func (l *RaftLog) allEntries() []pb.Entry {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	stableIdx := l.stabled
+	if l.LastIndex() == stableIdx {
+		return []pb.Entry{}
+	}
 	return l.entries[stableIdx+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	stableIdx := l.stabled
+	committed := l.committed
+	if committed > stableIdx {
+		return l.entries[l.dummyIndex-stableIdx-1 : committed-l.dummyIndex-1]
+	}
+	return []pb.Entry{}
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	entLen := uint64(len(l.entries))
+	return l.dummyIndex + entLen - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i >= l.dummyIndex {
+		return l.entries[i-l.dummyIndex].Term, nil
+	}
+	// 2. 判断 i 是否等于当前正准备安装的快照的最后一条日志
+	if !IsEmptySnap(l.pendingSnapshot) && i == l.pendingSnapshot.Metadata.Index {
+		return l.pendingSnapshot.Metadata.Term, nil
+	}
+
+	// 3. 否则的话 i 只能是快照中的日志
+	term, err := l.storage.Term(i)
+	return term, err
 }
