@@ -219,6 +219,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	if r.State != StateLeader {
+		return
+	}
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeat,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+	})
 }
 
 // tick advances the internal logical clock by a single tick.
@@ -307,10 +316,176 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+		r.FollowerStep(m)
 	case StateCandidate:
+		r.CandidateStep(m)
 	case StateLeader:
+		r.LeaderStep(m)
 	}
 	return nil
+}
+
+func (r *Raft) FollowerStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.handleMsgHup()
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.handleRequestVoteResp(m)
+	case pb.MessageType_MsgSnapshot:
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgTransferLeader:
+	case pb.MessageType_MsgTimeoutNow:
+	}
+}
+
+func (r *Raft) CandidateStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.handleMsgHup()
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.handleRequestVoteResp(m)
+	case pb.MessageType_MsgSnapshot:
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	case pb.MessageType_MsgTransferLeader:
+	case pb.MessageType_MsgTimeoutNow:
+	}
+}
+
+func (r *Raft) LeaderStep(m pb.Message) {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+	case pb.MessageType_MsgBeat:
+		r.broadcastHeartBeat()
+	case pb.MessageType_MsgPropose:
+		r.handlePropose(m)
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+		r.handleAppendEntriesResp(m)
+	case pb.MessageType_MsgRequestVote:
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.handleRequestVoteResp(m)
+	case pb.MessageType_MsgSnapshot:
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.handleHeartBeatResp(m)
+	case pb.MessageType_MsgTransferLeader:
+	case pb.MessageType_MsgTimeoutNow:
+	}
+}
+
+func (r *Raft) broadcastHeartBeat() {
+	for id := range r.Prs {
+		if id != r.id {
+			r.sendHeartbeat(id)
+		}
+	}
+	r.heartbeatElapsed = 0
+}
+
+func (r *Raft) broadCastRequestVote() {
+	if r.State != StateCandidate {
+		return
+	}
+	for id := range r.Prs {
+		if id != r.id {
+			r.sendRequestVote(id)
+		}
+	}
+}
+
+func (r *Raft) sendRequestVote(to uint64) {
+	//获取最后一条日志的 index和 term
+	idx := r.RaftLog.LastIndex()
+	term, err := r.RaftLog.Term(idx)
+	if err != nil {
+		panic(err)
+	}
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVote,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		LogTerm: term,
+		Index:   idx,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleRequestVote(m pb.Message) {
+	//1. 首先判断任期是否合法
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+	}
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+	}
+	//2. 判断日志是否合法，自身有没有投过票, 日志是否up-to-date
+	if (m.Term > r.Term || m.Term == r.Term && (r.Vote == None || r.Vote == m.From)) && r.RaftLog.isUpdate(m.Index, m.Term) {
+		r.Vote = m.From
+		r.becomeFollower(m.Term, None)
+	} else {
+		msg.Reject = true
+	}
+	//3.如果上述检查都通过了那么同意投票
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleRequestVoteResp(m pb.Message) {
+	//修改投票状态
+	r.votes[m.From] = !m.Reject
+	count := 0
+
+	for _, agree := range r.votes {
+		if agree {
+			count++
+		}
+	}
+	majority := len(r.Prs)/2 + 1
+	if m.Reject {
+		//投票被拒绝
+		if r.Term < m.Term {
+			r.becomeFollower(m.Term, None)
+		}
+		if len(r.votes)-count >= majority {
+			//大多的Follower都拒绝投票
+			r.becomeFollower(r.Term, None)
+		}
+	} else {
+		if count >= majority {
+			r.becomeLeader()
+		}
+	}
+}
+
+func (r *Raft) handleMsgHup() {
+	//开始选举
+	if len(r.Prs) == 1 {
+		//测试中仅有一个节点直接成为Leader
+		r.becomeLeader()
+		return
+	}
+	//成为Candidate
+	r.becomeCandidate()
+	//广播投票信息
+	r.broadCastRequestVote()
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -318,9 +493,56 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 }
 
+// 收到拼接响应之后的动作
+func (r *Raft) handleAppendEntriesResp(m pb.Message) {
+
+}
+
+// handlePropose 追加从上层应用接收到的新日志，并广播给 follower
+func (r *Raft) handlePropose(m pb.Message) {
+	r.appendEntry(m.Entries)
+	// leader 处于领导权禅让，停止接收新的请求
+	if r.leadTransferee != None {
+		return
+	}
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	if len(r.Prs) == 1 {
+		r.RaftLog.commit(r.RaftLog.LastIndex())
+	} else {
+		r.broadcastAppendEntry()
+	}
+}
+
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Commit:  r.RaftLog.committed,
+	}
+	if m.Term < r.Term {
+		msg.Reject = true
+	} else {
+		r.becomeFollower(m.Term, m.From)
+	}
+	//返回响应
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleHeartBeatResp(m pb.Message) {
+	if m.Reject {
+		//只能是因为任期小，所以被拒绝
+		r.becomeFollower(m.Term, None)
+	} else {
+		//检查匹配的日志是否同步，不同步需要重新同步一下
+		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		}
+	}
 }
 
 // handleSnapshot handle Snapshot RPC request

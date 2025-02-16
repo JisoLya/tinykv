@@ -81,11 +81,12 @@ func newLog(storage Storage) *RaftLog {
 		conf state也没有读取
 	*/
 	return &RaftLog{
-		storage:   storage,
-		committed: hardState.Commit,
-		applied:   firstIndex - 1,
-		stabled:   lastIndex,
-		entries:   entries,
+		storage:    storage,
+		committed:  hardState.Commit,
+		applied:    firstIndex - 1,
+		stabled:    lastIndex,
+		entries:    entries,
+		dummyIndex: firstIndex,
 	}
 }
 
@@ -146,4 +147,18 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// 3. 否则的话 i 只能是快照中的日志
 	term, err := l.storage.Term(i)
 	return term, err
+}
+
+// 判断日志是否是up-to-date的
+func (l *RaftLog) isUpdate(index uint64, term uint64) bool {
+	return term > l.LastTerm() || (term == l.LastTerm() && index >= l.LastIndex())
+}
+
+// 最后一条日志的任期
+func (l *RaftLog) LastTerm() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	lastIndex := l.LastIndex() - l.dummyIndex
+	return l.entries[lastIndex].Term
 }
