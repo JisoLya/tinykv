@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"math/rand/v2"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -133,16 +134,20 @@ type Raft struct {
 
 	// heartbeat interval, should send
 	heartbeatTimeout int
+
 	// baseline of election interval
 	electionTimeout int
+
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
+
 	// Ticks since it reached last electionTimeout when it is leader or candidate.
 	// Number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
 	electionElapsed int
 
+	randomElectionTimeout int
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
 	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
@@ -165,7 +170,43 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+
+	hardState, confState, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	if c.peers == nil {
+		c.peers = confState.Nodes
+	}
+	//todo PendingConfIndex暂时不初始化
+	rf := &Raft{
+		id:               c.ID,
+		Term:             hardState.Term,
+		Vote:             hardState.Vote,
+		RaftLog:          newLog(c.Storage),
+		Prs:              map[uint64]*Progress{},
+		State:            StateFollower,
+		votes:            map[uint64]bool{},
+		msgs:             []pb.Message{},
+		Lead:             None,
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		heartbeatElapsed: 0,
+		electionElapsed:  0,
+		leadTransferee:   0,
+		PendingConfIndex: 0,
+	}
+	rf.resetRandomElectionTimeout()
+	rf.Prs = make(map[uint64]*Progress)
+	for _, id := range c.peers {
+		rf.Prs[id] = &Progress{}
+	}
+
+	return rf
+}
+
+func (r *Raft) resetRandomElectionTimeout() {
+	r.randomElectionTimeout = r.electionTimeout + rand.IntN(r.electionTimeout)
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -183,22 +224,81 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	switch r.State {
+	case StateLeader:
+		r.leaderTick()
+	default:
+		//candidate 和 follower 的执行tick
+		r.otherTick()
+	}
+}
+
+func (r *Raft) leaderTick() {
+	r.heartbeatElapsed++
+	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		r.Step(pb.Message{
+			MsgType: pb.MessageType_MsgBeat,
+			To:      r.id,
+			From:    r.id,
+		})
+	}
+}
+
+func (r *Raft) otherTick() {
+	r.electionElapsed++
+	if r.electionElapsed >= r.electionTimeout {
+		r.electionElapsed = 0
+		r.Step(pb.Message{
+			MsgType: pb.MessageType_MsgHup,
+			To:      r.id,
+			From:    r.id,
+		})
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	if r.Term > term {
+		return
+	}
+	if term > r.Term {
+		//收到的任期号大于当前任期才转移投票
+		r.Vote = None
+	}
+	r.Term = term
+	r.State = StateFollower
+	r.Lead = lead
+	r.electionElapsed = 0
+	r.leadTransferee = None
+	r.resetRandomElectionTimeout()
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.State = StateCandidate
+	r.Term++
+	r.electionElapsed = 0
+	r.Vote = r.id
+	r.votes[r.id] = true
+	r.resetRandomElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.State = StateLeader
+	r.Lead = r.id
+	for id := range r.Prs {
+		r.Prs[id].Next = r.RaftLog.LastIndex()
+		r.Prs[id].Match = 0
+	}
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		Entries: []*pb.Entry{{}},
+	})
 }
 
 // Step the entrance of handle message, see `MessageType`
