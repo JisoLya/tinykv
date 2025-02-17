@@ -41,7 +41,7 @@ var stmap = [...]string{
 	"StateLeader",
 }
 
-const Debug = true
+const Debug = false
 
 func Dprintf(format string, a ...interface{}) {
 	if Debug {
@@ -552,54 +552,61 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//找到prevLogIndex 和prevLogTerm
 	prevLogIndex, prevLogTerm := m.Index, m.LogTerm
 
-	if prevLogIndex > r.RaftLog.LastIndex() {
-		// 当前发来的index大于最后一个日志Index
-		// 把最后一个日志的下标返回
+	//叫做conflictTerm未必发生冲突
+	//todo 可以优化为二分查找
+	conflictTerm := r.RaftLog.findTermByIndex(prevLogIndex)
+
+	if prevLogIndex > r.RaftLog.LastIndex() || conflictTerm != prevLogTerm {
+		//默认返回最后一条索引
 		appendEntryResp.Index = r.RaftLog.LastIndex()
-		r.msgs = append(r.msgs, appendEntryResp)
-		return
+		if prevLogIndex <= r.RaftLog.LastIndex() {
+			for _, ent := range r.RaftLog.entries {
+				//找到第一个冲突的任期，并返回这个log的前一个log Index
+				//e.g. leader: 1 1 1 4 4 5 5 6 6 6
+				//	 follower: 1 1 1 4 4 4 4
+				//appendEntry: 5 6 6 6
+				if ent.Term == conflictTerm {
+					appendEntryResp.Index = ent.Index - 1
+					break
+				}
+			}
+		}
+	} else {
+		//没有发生冲突，那么从第一个entry开始遍历，遇到冲突的日志则直接截断后边的
+		if len(m.Entries) > 0 {
+			index1, index2 := m.Index+1, m.Index+1
+			for ; index1 < r.RaftLog.LastIndex() && index1 <= m.Entries[len(m.Entries)-1].Index; index1++ {
+				term, _ := r.RaftLog.Term(index1)
+				if term != m.Entries[index1-index2].Term {
+					break
+				}
+			}
+			if index1-index2 != uint64(len(m.Entries)) {
+				r.RaftLog.truncate(index1)
+				r.RaftLog.appendNewEntries(m.Entries[index1-index2:])
+				r.RaftLog.stabled = min(r.RaftLog.stabled, index1-1)
+			}
+		}
+		if m.Commit > r.RaftLog.committed {
+			// 取当前节点「已经和 leader 同步的日志」和 leader 「已经提交日志」索引的最小值作为节点的 commitIndex
+			r.RaftLog.commit(min(m.Commit, m.Index+uint64(len(m.Entries))))
+		}
+		appendEntryResp.Reject = false
+		appendEntryResp.Index = m.Index + uint64(len(m.Entries))
+		appendEntryResp.LogTerm = r.RaftLog.findTermByIndex(appendEntryResp.Index)
 	}
 	//1. Reply false if log doesn’t contain an entry at prevLogIndex
 	//   whose term matches prevLogTerm (§5.3)
-	if prevLogIndex <= r.RaftLog.LastIndex() {
-		//Index合法但是Index处的Term与发送过来的Term不同
-		if prevLogTerm != r.RaftLog.findTermByIndex(prevLogIndex) {
-			//最后一个条目的前一个日志返回检查
-			appendEntryResp.Index = r.RaftLog.LastIndex() - 1
-			r.msgs = append(r.msgs, appendEntryResp)
-			return
-		}
-		// prevLogIndex处的term和发送来的相同
-		//2. If an existing entry conflicts with a new one (same index
-		//	 but different terms), delete the existing entry and all that
-		//	 follow it (§5.3)
-		for idx, ent := range m.Entries {
-			realIdx := uint64(idx) + prevLogIndex + 1 - r.RaftLog.dummyIndex
-			if realIdx < uint64(len(r.RaftLog.entries)) {
-				if r.RaftLog.entries[realIdx].Term != ent.Term {
-					//这里需要截断
-					r.RaftLog.entries = r.RaftLog.entries[:realIdx]
-					r.RaftLog.entries = append(r.RaftLog.entries, *ent)
-					r.RaftLog.stabled = min(r.RaftLog.LastIndex()-1, r.RaftLog.stabled)
-				} else {
-					continue
-				}
-			} else {
-				r.RaftLog.entries = append(r.RaftLog.entries, *ent)
-			}
-		}
-	}
+
+	// prevLogIndex处的term和发送来的相同
+	//2. If an existing entry conflicts with a new one (same index
+	//	 but different terms), delete the existing entry and all that
+	//	 follow it (§5.3)
+
 	//3. Append any new entries not already in the log
 
 	//4. If leaderCommit > commitIndex, set commitIndex =
 	//	 min(leaderCommit, index of last new entry)
-	if m.Commit > r.RaftLog.committed {
-		// 取当前节点「已经和 leader 同步的日志」和 leader 「已经提交日志」索引的最小值作为节点的 commitIndex
-		r.RaftLog.commit(min(m.Commit, m.Index+uint64(len(m.Entries))))
-	}
-	appendEntryResp.Reject = false
-	appendEntryResp.Index = m.Index + uint64(len(m.Entries))
-	appendEntryResp.LogTerm = r.RaftLog.findTermByIndex(appendEntryResp.Index)
 	r.msgs = append(r.msgs, appendEntryResp)
 }
 

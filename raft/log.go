@@ -210,3 +210,9 @@ func (l *RaftLog) FirstIndex() uint64 {
 	}
 	return l.entries[0].Index
 }
+
+func (l *RaftLog) truncate(startIndex uint64) {
+	if len(l.entries) > 0 {
+		l.entries = l.entries[:startIndex-l.dummyIndex]
+	}
+}
