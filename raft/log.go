@@ -162,3 +162,35 @@ func (l *RaftLog) LastTerm() uint64 {
 	lastIndex := l.LastIndex() - l.dummyIndex
 	return l.entries[lastIndex].Term
 }
+
+func (l *RaftLog) appendNewEntries(entries []*pb.Entry) uint64 {
+	for _, ent := range entries {
+		l.entries = append(l.entries, *ent)
+	}
+	return l.LastIndex()
+}
+
+func (l *RaftLog) commit(toCommit uint64) {
+	l.committed = toCommit
+}
+
+// 找到Index为index 日志所对应的任期号,如果index不在范围内，返回0
+func (l *RaftLog) findTermByIndex(index uint64) uint64 {
+	if index >= l.dummyIndex && index <= l.LastIndex() {
+		return l.entries[index-l.dummyIndex].Term
+	}
+	return 0
+}
+
+// maybeCommit 检查一个被大多数节点复制的日志是否需要提交
+func (l *RaftLog) maybeCommit(toCommit, term uint64) bool {
+	commitTerm, _ := l.Term(toCommit)
+	if toCommit > l.committed && commitTerm == term {
+		// 只有当该日志被大多数节点复制（函数调用保证），并且日志索引大于当前的commitIndex（Condition 1）
+		// 并且该日志是当前任期内创建的日志（Condition 2），才可以提交这条日志
+		// 【注】为了一致性，Raft 永远不会通过计算副本的方式提交之前任期的日志，只能通过提交当前任期的日志一并提交之前所有的日志
+		l.commit(toCommit)
+		return true
+	}
+	return false
+}
