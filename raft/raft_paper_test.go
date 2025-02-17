@@ -583,6 +583,7 @@ func TestFollowerCheckMessageType_MsgAppend2AB(t *testing.T) {
 
 		// unmatch with existing entry
 		{ents[0].Term, ents[1].Index, true},
+		//todo 这里需要进一步修改
 		// unexisting entry
 		{ents[1].Term + 1, ents[1].Index + 1, true},
 	}
