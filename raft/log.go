@@ -112,7 +112,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 	if l.LastIndex() == stableIdx {
 		return []pb.Entry{}
 	}
-	return l.entries[stableIdx+1:]
+	return l.getEntries(stableIdx+1, 0)
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -121,7 +121,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	stableIdx := l.stabled
 	committed := l.committed
 	if committed > stableIdx {
-		return l.entries[l.dummyIndex-stableIdx-1 : committed-l.dummyIndex-1]
+		return l.getEntries(l.applied+1, l.committed+1)
 	}
 	return []pb.Entry{}
 }
@@ -176,7 +176,7 @@ func (l *RaftLog) commit(toCommit uint64) {
 
 // 找到Index为index 日志所对应的任期号,如果index不在范围内，返回0
 func (l *RaftLog) findTermByIndex(index uint64) uint64 {
-	if index >= l.dummyIndex && index <= l.LastIndex() {
+	if index >= l.dummyIndex {
 		return l.entries[index-l.dummyIndex].Term
 	}
 	return 0
@@ -193,4 +193,20 @@ func (l *RaftLog) maybeCommit(toCommit, term uint64) bool {
 		return true
 	}
 	return false
+}
+
+// getEntries 返回 [start, end) 之间的所有日志，end = 0 表示返回 start 开始的所有日志
+func (l *RaftLog) getEntries(start uint64, end uint64) []pb.Entry {
+	if end == 0 {
+		end = l.LastIndex() + 1
+	}
+	start, end = start-l.dummyIndex, end-l.dummyIndex
+	return l.entries[start:end]
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[0].Index
 }

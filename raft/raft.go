@@ -41,7 +41,7 @@ var stmap = [...]string{
 	"StateLeader",
 }
 
-const Debug = false
+const Debug = true
 
 func Dprintf(format string, a ...interface{}) {
 	if Debug {
@@ -239,7 +239,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 			Commit:  r.RaftLog.committed,
 		}
 		//获取到需要发送的索引下标
-		nextEntries := r.RaftLog.entries[prevLogIndex+1:]
+		nextEntries := r.RaftLog.getEntries(prevLogIndex+1, 0)
 		for i := range nextEntries {
 			appendMsg.Entries = append(appendMsg.Entries, &nextEntries[i])
 		}
@@ -486,7 +486,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		r.becomeFollower(m.Term, None)
 	}
 	//2. 判断日志是否合法，自身有没有投过票, 日志是否up-to-date
-	if (m.Term > r.Term || m.Term == r.Term && (r.Vote == None || r.Vote == m.From)) && r.RaftLog.isUpdate(m.Index, m.Term) {
+	if (m.Term > r.Term || m.Term == r.Term && (r.Vote == None || r.Vote == m.From)) && r.RaftLog.isUpdate(m.Index, m.LogTerm) {
 		r.Vote = m.From
 		r.becomeFollower(m.Term, None)
 	} else {
@@ -564,26 +564,23 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	if prevLogIndex <= r.RaftLog.LastIndex() {
 		//Index合法但是Index处的Term与发送过来的Term不同
 		if prevLogTerm != r.RaftLog.findTermByIndex(prevLogIndex) {
-			r.RaftLog.entries = r.RaftLog.entries[0 : prevLogIndex-r.RaftLog.dummyIndex]
-			appendEntryResp.Index = r.RaftLog.LastIndex()
+			//最后一个条目的前一个日志返回检查
+			appendEntryResp.Index = r.RaftLog.LastIndex() - 1
 			r.msgs = append(r.msgs, appendEntryResp)
 			return
-		} else if prevLogIndex < r.RaftLog.dummyIndex {
-			//todo 需要发送快照了,后续完成
-
-			return
 		}
-
 		// prevLogIndex处的term和发送来的相同
 		//2. If an existing entry conflicts with a new one (same index
 		//	 but different terms), delete the existing entry and all that
 		//	 follow it (§5.3)
 		for idx, ent := range m.Entries {
-			realIdx := uint64(idx) + prevLogIndex + 1
-			if realIdx <= r.RaftLog.LastIndex()-r.RaftLog.dummyIndex {
+			realIdx := uint64(idx) + prevLogIndex + 1 - r.RaftLog.dummyIndex
+			if realIdx < uint64(len(r.RaftLog.entries)) {
 				if r.RaftLog.entries[realIdx].Term != ent.Term {
+					//这里需要截断
 					r.RaftLog.entries = r.RaftLog.entries[:realIdx]
 					r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+					r.RaftLog.stabled = min(r.RaftLog.LastIndex()-1, r.RaftLog.stabled)
 				} else {
 					continue
 				}
@@ -597,10 +594,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//4. If leaderCommit > commitIndex, set commitIndex =
 	//	 min(leaderCommit, index of last new entry)
 	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+		// 取当前节点「已经和 leader 同步的日志」和 leader 「已经提交日志」索引的最小值作为节点的 commitIndex
+		r.RaftLog.commit(min(m.Commit, m.Index+uint64(len(m.Entries))))
 	}
-
 	appendEntryResp.Reject = false
+	appendEntryResp.Index = m.Index + uint64(len(m.Entries))
+	appendEntryResp.LogTerm = r.RaftLog.findTermByIndex(appendEntryResp.Index)
 	r.msgs = append(r.msgs, appendEntryResp)
 }
 
