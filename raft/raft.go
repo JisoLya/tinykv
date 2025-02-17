@@ -554,12 +554,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	//叫做conflictTerm未必发生冲突
 	//todo 可以优化为二分查找
-	conflictTerm := r.RaftLog.findTermByIndex(prevLogIndex)
 
-	if prevLogIndex > r.RaftLog.LastIndex() || conflictTerm != prevLogTerm {
+	if prevLogIndex > r.RaftLog.LastIndex() || r.RaftLog.findTermByIndex(prevLogIndex) != prevLogTerm {
 		//默认返回最后一条索引
 		appendEntryResp.Index = r.RaftLog.LastIndex()
 		if prevLogIndex <= r.RaftLog.LastIndex() {
+			conflictTerm := r.RaftLog.findTermByIndex(prevLogIndex)
 			for _, ent := range r.RaftLog.entries {
 				//找到第一个冲突的任期，并返回这个log的前一个log Index
 				//e.g. leader: 1 1 1 4 4 5 5 6 6 6

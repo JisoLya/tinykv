@@ -179,7 +179,13 @@ func (l *RaftLog) findTermByIndex(index uint64) uint64 {
 	if index >= l.dummyIndex {
 		return l.entries[index-l.dummyIndex].Term
 	}
-	return 0
+	//2.
+	if !IsEmptySnap(l.pendingSnapshot) && index == l.pendingSnapshot.Metadata.Index {
+		return l.pendingSnapshot.Metadata.Term
+	}
+	//3.debug here
+	term, _ := l.storage.Term(index)
+	return term
 }
 
 // maybeCommit 检查一个被大多数节点复制的日志是否需要提交
