@@ -328,7 +328,6 @@ func (r *Raft) becomeCandidate() {
 	r.Term++
 	r.electionElapsed = 0
 	r.Vote = r.id
-	r.votes[r.id] = true
 	r.resetRandomElectionTimeout()
 	Dprintf("id[%d].term[%d]become candidate", r.id, r.Term)
 }
@@ -418,7 +417,7 @@ func (r *Raft) LeaderStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
-		r.handleRequestVoteResp(m)
+		//Leader 不能再接收RequestVoteResponse！
 	case pb.MessageType_MsgSnapshot:
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
@@ -452,6 +451,8 @@ func (r *Raft) broadCastRequestVote() {
 			r.sendRequestVote(id)
 		}
 	}
+	r.votes = make(map[uint64]bool)
+	r.votes[r.id] = true
 }
 
 func (r *Raft) sendRequestVote(to uint64) {

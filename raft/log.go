@@ -118,10 +118,14 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	stableIdx := l.stabled
-	committed := l.committed
-	if committed > stableIdx {
-		return l.getEntries(l.applied+1, l.committed+1)
+	//ent: [5,6,7,8,9]  commit = 8 applied = 4
+	//wantIdx [0,1,2,3,4]
+	//dummyIndex = 5
+	diff := l.dummyIndex - 1
+	if l.committed > l.applied {
+		//这里由于计算顺序的问题，uint64会越界...
+		//return l.entries[l.applied-l.dummyIndex-1 : l.committed-l.dummyIndex-1]
+		return l.entries[l.applied-diff : l.committed-diff]
 	}
 	return []pb.Entry{}
 }
