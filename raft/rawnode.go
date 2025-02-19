@@ -190,7 +190,7 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	//上层应用已经处理的ready中的状态，我们需要更新当前状态
+	// 上层应用已经处理的ready中的状态，我们需要更新当前状态
 	// 推进RawNode的状态
 	if rd.SoftState != nil {
 		rn.prevSoftState = rd.SoftState

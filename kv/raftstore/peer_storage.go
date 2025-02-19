@@ -306,8 +306,26 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 
 // Append the given entries to the raft log and update ps.raftState also delete log entries that will
 // never be committed
+// 将 Ready 中的 entries 持久化到 raftDB 中去，然后更新 RaftLocalState 的状态。同时，如果底层存储有冲突条目，则将其删除。
+// 将给定的条目附加到raft日志并更新ps.raftState，同时删除永远不会提交的日志条目
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		return nil
+	}
+	//把所有的entry都加到writeBatch中
+	for _, ent := range entries {
+		if err := raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, ent.Index), &ent); err != nil {
+			panic(err)
+		}
+	}
+	curLastIndex, curLastTerm := entries[len(entries)-1].Index, entries[len(entries)-1].Term
+	lastIndex, _ := ps.LastIndex()
+	for index := curLastIndex + 1; index <= lastIndex; index++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, index))
+	}
+	//更新raftLocalState
+	ps.raftState.LastIndex, ps.raftState.LastTerm = curLastIndex, curLastTerm
 	return nil
 }
 
@@ -328,9 +346,27 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
+// 将内存中的状态保存到磁盘中
+// 这里不要修改ready字段，这是后续调用Advance()所必需的
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	var res *ApplySnapResult
+	wb := &engine_util.WriteBatch{}
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		//todo 快照
+		return res, nil
+	}
+	if err := ps.Append(ready.Entries, wb); err != nil {
+		panic(err)
+	}
+	if !raft.IsEmptyHardState(ready.HardState) {
+		*ps.raftState.HardState = ready.HardState
+	}
+	if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		panic(err)
+	}
+	wb.MustWriteToDB(ps.Engines.Raft)
 	return nil, nil
 }
 
@@ -345,3 +381,8 @@ func (ps *PeerStorage) clearRange(regionID uint64, start, end []byte) {
 		EndKey:   end,
 	}
 }
+
+/*
+	整个过程分为两部分：raft worker 轮询 raftCh 以获得消息，这些消息包括驱动 Raft 模块的基本 tick 和作为 Raft 日志项的 Raft 命令；
+	它从 Raft 模块获得并处理 ready，包括发送raft消息、持久化状态、将提交的日志项应用到状态机。一旦应用，将响应返回给客户端。
+*/

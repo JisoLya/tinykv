@@ -165,7 +165,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		title = title + "one client"
 	}
 	title = title + " (" + part + ")" // 3A or 3B
-
+	//GenericTest(t, "2B", 1, false, false, false, -1, false, false)
+	//GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash bool, partitions bool, maxraftlog int, confchange bool, split bool)
 	nservers := 5
 	cfg := config.NewTestConfig()
 	if maxraftlog != -1 {
