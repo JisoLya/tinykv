@@ -142,6 +142,17 @@ func (d *peerMsgHandler) processRequest(ent *eraftpb.Entry, req *raft_cmdpb.Raft
 				})
 			}
 		case raft_cmdpb.CmdType_Snap:
+			if req.Header.RegionEpoch.Version != d.Region().RegionEpoch.Version {
+				BindRespError(resp, &util.ErrEpochNotMatch{})
+			} else {
+				// Get 和 Snap 请求需要先将结果写到 DB，否则的话如果有多个 entry 同时被 apply，客户端无法及时看到写入的结果
+				wb.MustWriteToDB(d.peerStorage.Engines.Kv)
+				wb = &engine_util.WriteBatch{}
+				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Snap,
+					Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
+				})
+			}
 			//todo 需要完成
 		}
 	}

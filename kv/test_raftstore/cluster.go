@@ -359,6 +359,7 @@ func (c *Cluster) MustDeleteCF(cf string, key []byte) {
 }
 
 func (c *Cluster) Scan(start, end []byte) [][]byte {
+	//这里新建的cmd是SnapCmd一开始没有实现message——snap的处理逻辑，所以在testBasic中会失败
 	req := NewSnapCmd()
 	values := make([][]byte, 0)
 	key := start
