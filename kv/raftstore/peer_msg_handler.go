@@ -40,7 +40,6 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-// todo
 // 判断是否有新的 Ready，没有就什么都不处理；
 // 调用 SaveReadyState 将 Ready 中需要持久化的内容保存到 badger。如果 Ready 中存在 snapshot，则应用它；
 // 然后调用 d.Send() 方法将 Ready 中的 Msg 发送出去；
@@ -153,10 +152,8 @@ func (d *peerMsgHandler) processRequest(ent *eraftpb.Entry, req *raft_cmdpb.Raft
 					Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
 				})
 			}
-			//todo 需要完成
 		}
 	}
-
 	d.handleProposals(ent, resp)
 	return wb
 }
@@ -244,7 +241,6 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
-// todo 将上层传来的cmdrequest转变成raft的entry传递给raft
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -256,7 +252,20 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		d.proposeRequest(msg, cb)
 	} else if msg.AdminRequest != nil {
 		//todo 待实现
-		//d.proposeAdminRequest()
+		d.proposeAdminRequest(msg, cb)
+	}
+}
+
+func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
+	switch msg.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		marshal, err := msg.Marshal()
+		if err != nil {
+			panic(err)
+		}
+		if err := d.RaftGroup.Propose(marshal); err != nil {
+			panic(err)
+		}
 	}
 }
 

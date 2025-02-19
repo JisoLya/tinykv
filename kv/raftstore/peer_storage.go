@@ -354,8 +354,9 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	var res *ApplySnapResult
 	wb := &engine_util.WriteBatch{}
 	if !raft.IsEmptySnap(&ready.Snapshot) {
-		//todo 快照
-		return res, nil
+		kvWb := &engine_util.WriteBatch{}
+		res, _ = ps.ApplySnapshot(&ready.Snapshot, kvWb, wb)
+		kvWb.MustWriteToDB(ps.Engines.Kv)
 	}
 	if err := ps.Append(ready.Entries, wb); err != nil {
 		panic(err)
@@ -367,7 +368,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		panic(err)
 	}
 	wb.MustWriteToDB(ps.Engines.Raft)
-	return nil, nil
+	return res, nil
 }
 
 func (ps *PeerStorage) ClearData() {

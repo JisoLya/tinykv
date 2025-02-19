@@ -157,6 +157,7 @@ func (rn *RawNode) Ready() Ready {
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
 	}
+	//如果有新的HardState，更新一下，否则不更新
 	if rn.isHardStateUpdate() {
 		ready.HardState = pb.HardState{
 			Term:   rn.Raft.Term,

@@ -244,9 +244,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 		}
 		r.msgs = append(r.msgs, appendMsg)
 		Dprintf("id[%d].term[%d] send append msg to id[%d] msg = %+v", r.id, r.Term, to, appendMsg)
+		return true
 	}
 	//todo 需要发送快照
-	// r.sendSnapShot(to)
+	r.sendSnapShot(to)
 	return false
 }
 
@@ -375,6 +376,7 @@ func (r *Raft) FollowerStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResp(m)
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgTransferLeader:
@@ -395,6 +397,7 @@ func (r *Raft) CandidateStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResp(m)
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -730,6 +733,38 @@ func (r *Raft) handleHeartBeatResp(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	resp := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+	}
+	meta := m.Snapshot.Metadata
+	if m.Term < r.Term {
+		resp.Reject = true
+	} else if r.RaftLog.committed >= meta.Index {
+		//已提交的日志大于等于快照中的日志
+		//此时也要拒绝，
+		resp.Reject = true
+		resp.Commit = r.RaftLog.committed
+	} else {
+		r.becomeFollower(m.Term, m.From)
+
+		r.RaftLog.dummyIndex = meta.Index + 1
+		r.RaftLog.committed = meta.Index
+		r.RaftLog.applied = meta.Index
+		r.RaftLog.stabled = meta.Index
+		r.RaftLog.pendingSnapshot = m.Snapshot
+		//Raft论文（§6）明确指出：
+		//"When a server installs a snapshot, it must also update its configuration information to match the configuration in the snapshot."
+		r.Prs = make(map[uint64]*Progress)
+		for _, id := range meta.ConfState.Nodes {
+			r.Prs[id] = &Progress{
+				Next: r.RaftLog.LastIndex() + 1,
+			}
+		}
+		resp.Index = meta.Index
+	}
+	r.msgs = append(r.msgs, resp)
 }
 
 // addNode add a new node to raft group
@@ -740,4 +775,20 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) sendSnapShot(to uint64) {
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		//获取快照失败
+	}
+	msg := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		To:       to,
+		From:     r.id,
+		Term:     r.Term,
+		Snapshot: &snapshot,
+	}
+	r.msgs = append(r.msgs, msg)
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
 }

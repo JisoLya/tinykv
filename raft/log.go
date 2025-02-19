@@ -76,11 +76,7 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
-	/*
-		todo pendingSnapShot 暂不读取
-		conf state也没有读取
-	*/
-	return &RaftLog{
+	rf := &RaftLog{
 		storage:    storage,
 		committed:  hardState.Commit,
 		applied:    firstIndex - 1,
@@ -88,6 +84,7 @@ func newLog(storage Storage) *RaftLog {
 		entries:    entries,
 		dummyIndex: firstIndex,
 	}
+	return rf
 }
 
 // We need to compact the log entries in some point of time like
