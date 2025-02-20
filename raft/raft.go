@@ -382,6 +382,7 @@ func (r *Raft) FollowerStep(m pb.Message) {
 	case pb.MessageType_MsgTransferLeader:
 		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeOutNow(m)
 	}
 }
 
@@ -405,6 +406,7 @@ func (r *Raft) CandidateStep(m pb.Message) {
 	case pb.MessageType_MsgTransferLeader:
 		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeOutNow(m)
 	}
 }
 
@@ -430,6 +432,7 @@ func (r *Raft) LeaderStep(m pb.Message) {
 	case pb.MessageType_MsgTransferLeader:
 		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeOutNow(m)
 	}
 }
 
@@ -830,4 +833,34 @@ func (r *Raft) handleLeaderTransfer(m pb.Message) {
 		return
 	}
 	r.leadTransferee = m.From
+	//需要给新的lead同步一下自己的log
+	if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		//log是同步的
+		r.sendTimeOutNow(m.From)
+	} else {
+		r.sendAppend(m.From)
+	}
+}
+
+func (r *Raft) sendTimeOutNow(to uint64) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		To:      to,
+		From:    r.id,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleTimeOutNow(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		log.Infof("节点已退出集群！")
+		return
+	}
+	//立刻进行选举
+	if err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup,
+		To:   r.id,
+		From: r.id,
+	}); err != nil {
+		panic("发起选举失败")
+	}
 }
