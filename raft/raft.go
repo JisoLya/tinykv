@@ -380,6 +380,7 @@ func (r *Raft) FollowerStep(m pb.Message) {
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgTransferLeader:
+		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
 	}
 }
@@ -402,6 +403,7 @@ func (r *Raft) CandidateStep(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
+		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
 	}
 }
@@ -426,6 +428,7 @@ func (r *Raft) LeaderStep(m pb.Message) {
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartBeatResp(m)
 	case pb.MessageType_MsgTransferLeader:
+		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
 	}
 }
@@ -770,11 +773,25 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			Next: r.RaftLog.LastIndex() + 1,
+		}
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+		//todo 日志
+		//由于移除了一个节点，并且Leader只有在收到appendEntryResp时才会更新commitEntry，所以需要发送一下AppendEntry
+		if r.State == StateLeader && r.maybeCommit() {
+			r.broadcastAppendEntry()
+		}
+	}
+
 }
 
 func (r *Raft) sendSnapShot(to uint64) {
@@ -791,4 +808,26 @@ func (r *Raft) sendSnapShot(to uint64) {
 	}
 	r.msgs = append(r.msgs, msg)
 	r.Prs[to].Next = snapshot.Metadata.Index + 1
+}
+
+func (r *Raft) handleLeaderTransfer(m pb.Message) {
+	if r.State != StateLeader {
+		return
+	}
+	//判断节点是否在集群中
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+	//目标是自己
+	if m.From == r.id {
+		return
+	}
+	//如果当前有正在执行的Transfer
+	if r.leadTransferee != m.From {
+		r.leadTransferee = None
+	} else {
+
+		return
+	}
+	r.leadTransferee = m.From
 }
