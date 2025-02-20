@@ -380,7 +380,10 @@ func (r *Raft) FollowerStep(m pb.Message) {
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgTransferLeader:
-		r.handleLeaderTransfer(m)
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	case pb.MessageType_MsgTimeoutNow:
 		r.handleTimeOutNow(m)
 	}
@@ -404,7 +407,11 @@ func (r *Raft) CandidateStep(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
-		r.handleLeaderTransfer(m)
+		//如果收到了LeaderTransfer，需要转发给leader
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	case pb.MessageType_MsgTimeoutNow:
 		r.handleTimeOutNow(m)
 	}
