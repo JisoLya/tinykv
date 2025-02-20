@@ -647,6 +647,10 @@ func (r *Raft) handleAppendEntriesResp(m pb.Message) {
 			r.broadcastAppendEntry()
 		}
 	}
+	//在收到拼接成功的响应了之后，判断一下是否在leaderTansfer，如果在的话，直接发送timeoutnow
+	if r.leadTransferee == m.From && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		r.sendTimeOutNow(m.From)
+	}
 }
 
 // maybeUpdate 检查日志同步是不是一个过期的回复
