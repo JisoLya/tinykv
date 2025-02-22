@@ -374,7 +374,7 @@ func (r *Raft) FollowerStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
-		r.handleRequestVoteResp(m)
+		//follower不需要处理投票响应
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
