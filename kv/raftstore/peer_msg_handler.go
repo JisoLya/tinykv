@@ -85,6 +85,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		kvWb := &engine_util.WriteBatch{}
 		for _, ent := range ready.CommittedEntries {
 			kvWb = d.processCommitedEntries(&ent, kvWb)
+			// 这里说的情况是，指令交给了底层Raft，而raft处理完成了之后，准备将这些entries写入DB的过程中挂掉了，此时就不能再对db写入数据
 			// 节点有可能在 processCommittedEntry 返回之后就销毁了
 			// 如果销毁了需要直接返回，保证对这个节点而言不会再 DB 中写入数据
 			if d.stopped {
