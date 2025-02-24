@@ -6,6 +6,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/raft"
+	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -61,9 +62,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	log.Debugf("Has new [Ready : %+v]", ready)
 
 	//3. 调用 SaveReadyState 将 Ready 中需要持久化的内容保存到 badger。如果 Ready 中存在 snapshot，则应用它；
-	_, err := d.peerStorage.SaveReadyState(&ready)
+	applySnapResult, err := d.peerStorage.SaveReadyState(&ready)
 	if err != nil {
 		panic(err)
+	}
+	if applySnapResult != nil {
+		if !reflect.DeepEqual(applySnapResult.PrevRegion, applySnapResult.Region) {
+			d.peerStorage.SetRegion(applySnapResult.Region)
+			storeMeta := d.ctx.storeMeta
+			storeMeta.Lock()
+			storeMeta.regions[applySnapResult.Region.Id] = applySnapResult.Region
+			storeMeta.regionRanges.Delete(&regionItem{applySnapResult.PrevRegion})
+			storeMeta.regionRanges.ReplaceOrInsert(&regionItem{applySnapResult.Region})
+			storeMeta.Unlock()
+		}
 	}
 
 	d.Send(d.ctx.trans, ready.Messages)
@@ -73,6 +85,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		kvWb := &engine_util.WriteBatch{}
 		for _, ent := range ready.CommittedEntries {
 			kvWb = d.processCommitedEntries(&ent, kvWb)
+			// 节点有可能在 processCommittedEntry 返回之后就销毁了
+			// 如果销毁了需要直接返回，保证对这个节点而言不会再 DB 中写入数据
+			if d.stopped {
+				return
+			}
+		}
+		//TestBasicConf3B todo 这里还要更新RaftApplyState
+		lastEntry := ready.CommittedEntries[len(ready.CommittedEntries)-1]
+		d.peerStorage.applyState.AppliedIndex = lastEntry.Index
+		if err := kvWb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
+			panic(err)
 		}
 		kvWb.MustWriteToDB(d.peerStorage.Engines.Kv)
 	}
@@ -97,7 +120,6 @@ func (d *peerMsgHandler) processCommitedEntries(ent *pb.Entry, wb *engine_util.W
 	if requests.AdminRequest != nil {
 		return d.processAdminRequest(ent, requests, wb)
 	}
-
 	return d.processRequest(ent, requests, wb)
 }
 
@@ -116,6 +138,15 @@ func (d *peerMsgHandler) processConfChange(entry *pb.Entry, cc *pb.ConfChange, w
 	}
 	switch cc.ChangeType {
 	case pb.ConfChangeType_AddNode:
+		log.Debugf("[AddNode] %d add node id %v", d.peer.PeerId(), cc.NodeId)
+		//首先需要检查node是否在region中
+		if d.searchPeerWithId(cc.NodeId) == len(d.peerStorage.region.Peers) {
+			region.Peers = append(region.Peers, msg.AdminRequest.ChangePeer.Peer)
+			region.RegionEpoch.ConfVer++
+			meta.WriteRegionState(wb, region, rspb.PeerState_Normal)
+			d.updateStoreMeta(region)
+			d.insertPeerCache(msg.AdminRequest.ChangePeer.Peer)
+		}
 	case pb.ConfChangeType_RemoveNode:
 		if cc.NodeId == d.PeerId() {
 			d.destroyPeer()
@@ -337,7 +368,6 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		if err := d.RaftGroup.Propose(marshal); err != nil {
 			panic(err)
 		}
-
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		log.Debugf("TransferLeader. receive message %+v", msg)
 		//transfer leader是一个命令，不需要propose到其他的peer上，直接转换就好
@@ -354,7 +384,8 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 	//
 	case raft_cmdpb.AdminCmdType_ChangePeer:
-		log.Debugf("ChangePeer. receive message %+v", msg)
+		//todo 这里有问题，applyIndex没有更新
+		log.Debugf("ChangePeer. receive message %+v,d.peerStorageAppliedIdx: %d, pendingConfIndex: %d", msg, d.peerStorage.AppliedIndex(), d.RaftGroup.Raft.PendingConfIndex)
 		if d.peerStorage.AppliedIndex() >= d.RaftGroup.Raft.PendingConfIndex {
 			// 如果 region 只有两个节点，并且需要 remove leader，则需要先完成 transferLeader
 			if len(d.Region().Peers) == 2 && msg.AdminRequest.ChangePeer.ChangeType == pb.ConfChangeType_RemoveNode && msg.AdminRequest.ChangePeer.Peer.Id == d.PeerId() {

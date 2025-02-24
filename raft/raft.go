@@ -16,7 +16,7 @@ package raft
 
 import (
 	"errors"
-	log "github.com/sirupsen/logrus"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand/v2"
 	"sort"
 
@@ -39,14 +39,6 @@ var stmap = [...]string{
 	"StateFollower",
 	"StateCandidate",
 	"StateLeader",
-}
-
-const Debug = false
-
-func Dprintf(format string, a ...interface{}) {
-	if Debug {
-		log.Printf(format, a...)
-	}
 }
 
 func (st StateType) String() string {
@@ -243,10 +235,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 			appendMsg.Entries = append(appendMsg.Entries, &nextEntries[i])
 		}
 		r.msgs = append(r.msgs, appendMsg)
-		Dprintf("id[%d].term[%d] send append msg to id[%d] msg = %+v", r.id, r.Term, to, appendMsg)
 		return true
 	}
-	//todo 需要发送快照
 	r.sendSnapShot(to)
 	return false
 }
@@ -264,7 +254,6 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		Term:    r.Term,
 	}
 	r.msgs = append(r.msgs, message)
-	Dprintf("id[%d].term[%d] send append msg to id[%d] msg = %+v", r.id, r.Term, to, message)
 }
 
 // tick advances the internal logical clock by a single tick.
@@ -318,7 +307,6 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.electionElapsed = 0
 	r.leadTransferee = None
 	r.resetRandomElectionTimeout()
-	Dprintf("id[%d].term[%d]become follower", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -329,7 +317,6 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = 0
 	r.Vote = r.id
 	r.resetRandomElectionTimeout()
-	Dprintf("id[%d].term[%d]become candidate", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -346,7 +333,6 @@ func (r *Raft) becomeLeader() {
 		MsgType: pb.MessageType_MsgPropose,
 		Entries: []*pb.Entry{{}},
 	})
-	Dprintf("id[%d].term[%d]become leader", r.id, r.Term)
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -486,12 +472,10 @@ func (r *Raft) sendRequestVote(to uint64) {
 		Index:   idx,
 	}
 	r.msgs = append(r.msgs, msg)
-	Dprintf("id[%d].term[%d] send requestVote to id[%d]", r.id, r.Term, to)
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
 	//1. 首先判断任期是否合法
-	Dprintf("id[%d].term[%d] receive requestVote from id[%d], msg: %+v", r.id, r.Term, m.From, m)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		To:      m.From,
@@ -514,7 +498,6 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 
 func (r *Raft) handleRequestVoteResp(m pb.Message) {
 	//修改投票状态
-	Dprintf("id[%d].term[%d] receive requestVoteResp from id[%d], msg: %+v", r.id, r.Term, m.From, m)
 	r.votes[m.From] = !m.Reject
 	count := 0
 	for _, agree := range r.votes {
@@ -551,8 +534,6 @@ func (r *Raft) handleMsgHup() {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	Dprintf("id[%d].term[%d] receive append from id[%d], msg: %+v", r.id, r.Term, m.From, m)
-	Dprintf("id[%d].term[%d] current log: %+v", r.id, r.Term, r.RaftLog.entries)
 	appendEntryResp := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From:    r.id,
@@ -628,7 +609,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // 收到拼接响应之后的动作
 func (r *Raft) handleAppendEntriesResp(m pb.Message) {
-	Dprintf("id[%d].term[%d] receive appendResp from id[%d], msg: %+v", r.id, r.Term, m.From, m)
 	if m.Reject {
 		if m.Term > r.Term {
 			// 任期大于自己，那么就变为 Follower
@@ -702,6 +682,7 @@ func (r *Raft) appendEntry(entries []*pb.Entry) {
 		entries[i].Index = lastIndex + uint64(i) + 1
 		entries[i].Term = r.Term
 		if entries[i].EntryType == pb.EntryType_EntryConfChange {
+			log.Debugf("id %d 更新 PendingConfIndex from %d to %d", r.id, r.PendingConfIndex, entries[i].Index)
 			r.PendingConfIndex = entries[i].Index
 		}
 	}
@@ -787,11 +768,13 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	log.Debugf("add id %d in progress!", id)
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{
 			Next: r.RaftLog.LastIndex() + 1,
 		}
 	}
+	log.Debugf("current prs: %v", r.Prs)
 }
 
 // removeNode remove a node from raft group
@@ -812,6 +795,7 @@ func (r *Raft) sendSnapShot(to uint64) {
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		//获取快照失败
+		return
 	}
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
