@@ -139,6 +139,7 @@ func (r *SchedulerTaskHandler) onStoreHeartbeat(t *SchedulerStoreHeartbeatTask) 
 	r.SchedulerClient.StoreHeartbeat(context.TODO(), t.Stats)
 }
 
+// 这里下发任务
 func (r *SchedulerTaskHandler) sendAdminRequest(regionID uint64, epoch *metapb.RegionEpoch, peer *metapb.Peer, req *raft_cmdpb.AdminRequest, callback *message.Callback) {
 	cmd := &raft_cmdpb.RaftCmdRequest{
 		Header: &raft_cmdpb.RaftRequestHeader{
@@ -148,5 +149,8 @@ func (r *SchedulerTaskHandler) sendAdminRequest(regionID uint64, epoch *metapb.R
 		},
 		AdminRequest: req,
 	}
+	//SchedulerTaskHandler中的router是raftRouter
+	//todo 需要跟进一下router是怎么下发任务的
+	log.Debugf("SchedulerTaskHandler[storeId %d]下发任务: %+v", r.storeID, cmd)
 	r.router.SendRaftCommand(cmd, callback)
 }

@@ -542,6 +542,7 @@ func TestBasicConfChange3B(t *testing.T) {
 	cluster.Start()
 	defer cluster.Shutdown()
 
+	//把regionId为1的peer除了store1中的peer1其余的都删除了
 	cluster.MustTransferLeader(1, NewPeer(1, 1))
 	cluster.MustRemovePeer(1, NewPeer(2, 2))
 	cluster.MustRemovePeer(1, NewPeer(3, 3))

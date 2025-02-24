@@ -19,7 +19,8 @@ type peerState struct {
 
 // router routes a message to a peer.
 type router struct {
-	peers       sync.Map // regionID -> peerState
+	peers sync.Map // regionID -> peerState
+	//todo 消息被发到了peerSender管道中
 	peerSender  chan message.Msg
 	storeSender chan<- message.Msg
 }

@@ -799,13 +799,13 @@ func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 	if _, ok := r.Prs[id]; ok {
 		delete(r.Prs, id)
-		//todo 日志
 		//由于移除了一个节点，并且Leader只有在收到appendEntryResp时才会更新commitEntry，所以需要发送一下AppendEntry
 		if r.State == StateLeader && r.maybeCommit() {
 			r.broadcastAppendEntry()
 		}
 	}
-
+	//清除一下pendingConfIndex，表示当前没有未完成的配置更新
+	r.PendingConfIndex = None
 }
 
 func (r *Raft) sendSnapShot(to uint64) {

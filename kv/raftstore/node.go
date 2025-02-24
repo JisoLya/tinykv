@@ -68,6 +68,7 @@ func (n *Node) Start(ctx context.Context, engines *engine_util.Engines, trans Tr
 	if err != nil {
 		return err
 	}
+	//这里内部会启动raftWorker不断地获取指令，批量的传递给PeerMessageHandler
 	if err = n.startNode(engines, trans, snapMgr); err != nil {
 		return err
 	}

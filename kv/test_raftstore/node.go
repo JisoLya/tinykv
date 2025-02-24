@@ -127,6 +127,7 @@ func (t *MockTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	return nil
 }
 
+// Simulator的实现
 type NodeSimulator struct {
 	sync.RWMutex
 

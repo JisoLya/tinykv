@@ -282,10 +282,13 @@ func (m *MockSchedulerClient) RegionHeartbeat(req *schedulerpb.RegionHeartbeatRe
 		RegionEpoch: req.Region.GetRegionEpoch(),
 		TargetPeer:  req.Leader,
 	}
+	//检查是否有未完成的operator
 	if op := m.operators[regionID]; op != nil {
+		log.Debugf("[region %d], 存在未完成的op: %+v", regionID, op)
 		if m.tryFinished(op, req.Region, req.Leader) {
 			delete(m.operators, regionID)
 		} else {
+			log.Debugf("Client对心跳做出响应resp : %s", resp)
 			m.makeRegionHeartbeatResponse(op, resp)
 		}
 		log.Debugf("[region %d] schedule %v", regionID, op)
