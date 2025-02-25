@@ -359,7 +359,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 }
 
 func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	log.Debugf("Propose AdminRequest: [msg: %+v]", msg)
 	switch msg.AdminRequest.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		marshal, err := msg.Marshal()
@@ -412,7 +411,25 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 			})
 		}
 	case raft_cmdpb.AdminCmdType_Split:
-
+		//检查regionEpoch
+		if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
+			log.Debugf("Receive expired Split request!  msg: %+v", msg)
+			cb.Done(ErrResp(err))
+			return
+		}
+		if err := util.CheckKeyInRegion(msg.AdminRequest.Split.SplitKey, d.Region()); err != nil {
+			log.Debugf("key not in region! msg: %+v", msg)
+			cb.Done(ErrResp(err))
+			return
+		}
+		log.Infof("[AdminCmdType_Split Propose] Region %v Split, entryIndex %v", d.Region(), d.nextProposalIndex())
+		d.proposals = append(d.proposals, &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
+		data, _ := msg.Marshal()
+		d.RaftGroup.Propose(data)
 	}
 }
 
@@ -870,8 +887,108 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 }
 
 func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb.RaftCmdRequest, wb *engine_util.WriteBatch) *engine_util.WriteBatch {
-	log.Debugf("ProcessAdminRequest [request: %+v]", requests)
+	adminRequest := requests.AdminRequest
+	log.Debugf("ProcessAdminRequest [request: %+v]", adminRequest)
+	switch adminRequest.CmdType {
+	//todo 需要实现一下，这里的测试没有覆盖
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		//压缩日志的索引大于当前压缩日志的索引，直接更新一下truncatedState的状态
+		if adminRequest.CompactLog.CompactIndex > d.peerStorage.applyState.TruncatedState.Index {
+			truncatedState := d.peerStorage.applyState.TruncatedState
+			truncatedState.Index, truncatedState.Term = adminRequest.CompactLog.CompactIndex, adminRequest.CompactLog.CompactTerm
+			// 调度日志截断任务到 raftlog-gc worker
+			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
+		}
+	case raft_cmdpb.AdminCmdType_Split:
+		//apply 到这条命令时，首先检查该命令是否有效，即 RegionId 与 RegionEpoch 是否匹配，若不匹配，说明在收到消息之前已经进行过 Peer Change 或 Region Split，返回一个 error;
+		//1. regionNotfound
+		if requests.Header.RegionId != d.regionId {
+			regionNotFound := &util.ErrRegionNotFound{RegionId: requests.Header.RegionId}
+			d.handleProposals(ent, ErrResp(regionNotFound))
+			return wb
+		}
+		if err := util.CheckRegionEpoch(requests, d.Region(), true); err != nil {
+			d.handleProposals(ent, ErrResp(err))
+			return wb
+		}
+		if err := util.CheckKeyInRegion(adminRequest.Split.SplitKey, d.Region()); err != nil {
+			d.handleProposals(ent, ErrResp(err))
+			return wb
+		}
+		//根据命令中包含的 splitKey 划分为两个 Region，值区间分别为 [startKey, splitKey) 与 [splitKey, endKey)，且 RegionEpoch 中的 Version 字段均在原基础上加 1; > 其中前者为原 Region，后者为新 Region
+		oldRegion := d.Region()
+		oldRegion.RegionEpoch.Version++
+		//为新region的peers添加信息，后续再创建并注册
+		//根据命令中的 NewPeerIds，为新 Region 的 Peers 修改 PeerId，StoreId 不变
+		newpeers := make([]*metapb.Peer, 0)
+		for i, p := range oldRegion.Peers {
+			newpeers = append(newpeers, &metapb.Peer{
+				Id:      adminRequest.Split.NewPeerIds[i],
+				StoreId: p.StoreId,
+			})
+		}
+		//创建一个新的region
+		newRegion := &metapb.Region{
+			Id:          adminRequest.Split.NewRegionId,
+			StartKey:    adminRequest.Split.SplitKey,
+			EndKey:      oldRegion.EndKey,
+			RegionEpoch: oldRegion.RegionEpoch,
+			Peers:       newpeers,
+		}
+		//调用 createPeer() 在当前 Raftstore 上创建 Peer，并如同 maybeCreatePeer() 的那样进行注册与唤醒等操作;
+		p, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
+		//更新 storeMeta，分裂出的两个 Region 都要更新;
+		m := d.ctx.storeMeta
+		m.Lock()
+		//删除原有的region
+		m.regionRanges.Delete(&regionItem{region: oldRegion})
+		delete(m.regions, oldRegion.Id)
+		//修改现在的regionEndKey
+		oldRegion.EndKey = adminRequest.Split.SplitKey
+		m.regionRanges.ReplaceOrInsert(&regionItem{oldRegion})
+		m.regionRanges.ReplaceOrInsert(&regionItem{newRegion})
+		m.Unlock()
+		meta.WriteRegionState(wb, newRegion, rspb.PeerState_Normal)
+		meta.WriteRegionState(wb, oldRegion, rspb.PeerState_Normal)
+		//创建并注册
+		// If we create the peer actively, like bootstrap/split/merge region, we should
+		// use this function to create the peer. The region must contain the peer info
+		// for this store.
+		npeer, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		d.ctx.router.register(npeer)
+
+		d.handleProposals(ent, &raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType: raft_cmdpb.AdminCmdType_Split,
+				Split: &raft_cmdpb.SplitResponse{
+					Regions: []*metapb.Region{newRegion, oldRegion},
+				},
+			},
+		})
+		log.Infof("[AdminCmdType_Split Process] oldRegin %v, newRegion %v", oldRegion, newRegion)
+		//如果当前节点在 Raft 层是 Leader 的身份，则需要返回 Response，并且给 Scheduler 发一则心跳信息，表示该操作已完成
+		if d.IsLeader() {
+			d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+			d.notifyHeartbeatScheduler(newRegion, p)
+		}
+	}
 	return wb
+}
+
+// 向scheduler发送心跳
+func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *peer) {
+	clonedRegion := new(metapb.Region)
+	err := util.CloneMsg(region, clonedRegion)
+	if err != nil {
+		return
+	}
+	d.ctx.schedulerTaskSender <- &runner.SchedulerRegionHeartbeatTask{
+		Region:          clonedRegion,
+		Peer:            peer.Meta,
+		PendingPeers:    peer.CollectPendingPeers(),
+		ApproximateSize: peer.ApproximateSize,
+	}
 }
 
 func (d *peerMsgHandler) updateStoreMeta(region *metapb.Region) {
