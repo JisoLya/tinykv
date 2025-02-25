@@ -902,6 +902,7 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 	case raft_cmdpb.AdminCmdType_Split:
 		//apply 到这条命令时，首先检查该命令是否有效，即 RegionId 与 RegionEpoch 是否匹配，若不匹配，说明在收到消息之前已经进行过 Peer Change 或 Region Split，返回一个 error;
 		//1. regionNotfound
+		//todo 总是出现EpochNotMatch
 		if requests.Header.RegionId != d.regionId {
 			regionNotFound := &util.ErrRegionNotFound{RegionId: requests.Header.RegionId}
 			d.handleProposals(ent, ErrResp(regionNotFound))
@@ -913,6 +914,11 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		}
 		if err := util.CheckKeyInRegion(adminRequest.Split.SplitKey, d.Region()); err != nil {
 			d.handleProposals(ent, ErrResp(err))
+			return wb
+		}
+
+		if len(d.Region().Peers) != len(adminRequest.Split.NewPeerIds) {
+			d.handleProposals(ent, ErrRespStaleCommand(d.Term()))
 			return wb
 		}
 		//根据命令中包含的 splitKey 划分为两个 Region，值区间分别为 [startKey, splitKey) 与 [splitKey, endKey)，且 RegionEpoch 中的 Version 字段均在原基础上加 1; > 其中前者为原 Region，后者为新 Region
@@ -935,6 +941,7 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 			RegionEpoch: oldRegion.RegionEpoch,
 			Peers:       newpeers,
 		}
+		log.Debugf("new Region : %+v, old region: %+v", newRegion, oldRegion)
 		//调用 createPeer() 在当前 Raftstore 上创建 Peer，并如同 maybeCreatePeer() 的那样进行注册与唤醒等操作;
 		p, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
 		//更新 storeMeta，分裂出的两个 Region 都要更新;
@@ -956,7 +963,7 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		// for this store.
 		npeer, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
 		d.ctx.router.register(npeer)
-
+		d.ctx.router.send(newRegion.Id, message.Msg{Type: message.MsgTypeStart})
 		d.handleProposals(ent, &raft_cmdpb.RaftCmdResponse{
 			Header: &raft_cmdpb.RaftResponseHeader{},
 			AdminResponse: &raft_cmdpb.AdminResponse{
