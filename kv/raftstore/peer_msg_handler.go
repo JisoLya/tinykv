@@ -76,9 +76,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			storeMeta.Unlock()
 		}
 	}
-
-	d.Send(d.ctx.trans, ready.Messages)
-
+	if len(ready.Messages) != 0 {
+		d.Send(d.ctx.trans, ready.Messages)
+	}
 	if len(ready.CommittedEntries) > 0 {
 		//获取需要处理的commitEntries
 		kvWb := &engine_util.WriteBatch{}
@@ -241,8 +241,8 @@ func (d *peerMsgHandler) processRequest(ent *pb.Entry, req *raft_cmdpb.RaftCmdRe
 				})
 			}
 		case raft_cmdpb.CmdType_Snap:
-			if req.Header.RegionEpoch.Version != d.Region().RegionEpoch.Version {
-				BindRespError(resp, &util.ErrEpochNotMatch{})
+			if err := util.CheckRegionEpoch(req, d.Region(), true); err != nil {
+				BindRespError(resp, err)
 			} else {
 				// Get 和 Snap 请求需要先将结果写到 DB，否则的话如果有多个 entry 同时被 apply，客户端无法及时看到写入的结果
 				wb.MustWriteToDB(d.peerStorage.Engines.Kv)
@@ -890,11 +890,20 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 	switch adminRequest.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		//压缩日志的索引大于当前压缩日志的索引，直接更新一下truncatedState的状态
-		if adminRequest.CompactLog.CompactIndex > d.peerStorage.applyState.TruncatedState.Index {
+		if adminRequest.CompactLog.CompactIndex >= d.peerStorage.applyState.TruncatedState.Index {
 			truncatedState := d.peerStorage.applyState.TruncatedState
 			truncatedState.Index, truncatedState.Term = adminRequest.CompactLog.CompactIndex, adminRequest.CompactLog.CompactTerm
 			// 调度日志截断任务到 raftlog-gc worker
 			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
+			adminResp := &raft_cmdpb.AdminResponse{
+				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+				CompactLog: &raft_cmdpb.CompactLogResponse{},
+			}
+			cmdResp := &raft_cmdpb.RaftCmdResponse{
+				Header:        &raft_cmdpb.RaftResponseHeader{},
+				AdminResponse: adminResp,
+			}
+			d.handleProposals(ent, cmdResp)
 		}
 	case raft_cmdpb.AdminCmdType_Split:
 		//apply 到这条命令时，首先检查该命令是否有效，即 RegionId 与 RegionEpoch 是否匹配，若不匹配，说明在收到消息之前已经进行过 Peer Change 或 Region Split，返回一个 error;
