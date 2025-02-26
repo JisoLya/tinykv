@@ -934,13 +934,17 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		}
 		//创建一个新的region
 		newRegion := &metapb.Region{
-			Id:          adminRequest.Split.NewRegionId,
-			StartKey:    adminRequest.Split.SplitKey,
-			EndKey:      oldRegion.EndKey,
-			RegionEpoch: oldRegion.RegionEpoch,
-			Peers:       newpeers,
+			Id:       adminRequest.Split.NewRegionId,
+			StartKey: adminRequest.Split.SplitKey,
+			EndKey:   oldRegion.EndKey,
+			//RegionEpoch: oldRegion.RegionEpoch,
+			//这里新分离出来的Region具有独立的confVer和InitVer，
+			RegionEpoch: &metapb.RegionEpoch{
+				ConfVer: InitEpochConfVer,
+				Version: InitEpochVer,
+			},
+			Peers: newpeers,
 		}
-		log.Errorf("New Region Epoch: %+v, Old Region Epoch: %+v", newRegion.RegionEpoch, oldRegion.RegionEpoch)
 		//调用 createPeer() 在当前 Raftstore 上创建 Peer，并如同 maybeCreatePeer() 的那样进行注册与唤醒等操作;
 		p, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
 		//更新 storeMeta，分裂出的两个 Region 都要更新;
@@ -948,12 +952,13 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		m.Lock()
 		//删除原有的region
 		m.regionRanges.Delete(&regionItem{region: oldRegion})
-		delete(m.regions, oldRegion.Id)
+		//也不应该清除原有的region对应的映射。。
+		//delete(m.regions, oldRegion.Id)
 		//修改现在的regionEndKey
 		oldRegion.EndKey = adminRequest.Split.SplitKey
 		m.regionRanges.ReplaceOrInsert(&regionItem{oldRegion})
 		m.regionRanges.ReplaceOrInsert(&regionItem{newRegion})
-		//这里忘记初始化重新修改了...一直导致3B过不去
+		//这里忘记初始化重新修改了...
 		m.regions[newRegion.Id] = newRegion
 		m.Unlock()
 		d.SizeDiffHint = 0
