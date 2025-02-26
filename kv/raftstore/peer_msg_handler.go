@@ -282,7 +282,6 @@ func (d *peerMsgHandler) handleProposals(ent *pb.Entry, resp *raft_cmdpb.RaftCmd
 
 // 用于接收从 Cluster 发来的消息
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
-	log.Debugf("Handle [msg: %+v]", msg)
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -384,7 +383,6 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 	//
 	case raft_cmdpb.AdminCmdType_ChangePeer:
-		//todo 这里有问题，applyIndex没有更新
 		log.Debugf("ChangePeer. receive message %+v,d.peerStorageAppliedIdx: %d, pendingConfIndex: %d", msg, d.peerStorage.AppliedIndex(), d.RaftGroup.Raft.PendingConfIndex)
 		if d.peerStorage.AppliedIndex() >= d.RaftGroup.Raft.PendingConfIndex {
 			// 如果 region 只有两个节点，并且需要 remove leader，则需要先完成 transferLeader
@@ -412,6 +410,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		}
 	case raft_cmdpb.AdminCmdType_Split:
 		//检查regionEpoch
+		log.Errorf("Propose AdminRequest,RegionEpoch in msg:%+v, d.RegionEpoch: %+v", msg.Header.RegionEpoch, d.Region().GetRegionEpoch())
 		if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
 			log.Debugf("Receive expired Split request!  msg: %+v", msg)
 			cb.Done(ErrResp(err))
@@ -422,7 +421,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 			cb.Done(ErrResp(err))
 			return
 		}
-		log.Infof("[AdminCmdType_Split Propose] Region %v Split, entryIndex %v", d.Region(), d.nextProposalIndex())
+		log.Errorf("[AdminCmdType_Split Propose] Region %v Split, entryIndex %v", d.Region(), d.nextProposalIndex())
 		d.proposals = append(d.proposals, &proposal{
 			index: d.nextProposalIndex(),
 			term:  d.Term(),
@@ -941,7 +940,7 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 			RegionEpoch: oldRegion.RegionEpoch,
 			Peers:       newpeers,
 		}
-		log.Debugf("new Region : %+v, old region: %+v", newRegion, oldRegion)
+		log.Errorf("New Region Epoch: %+v, Old Region Epoch: %+v", newRegion.RegionEpoch, oldRegion.RegionEpoch)
 		//调用 createPeer() 在当前 Raftstore 上创建 Peer，并如同 maybeCreatePeer() 的那样进行注册与唤醒等操作;
 		p, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
 		//更新 storeMeta，分裂出的两个 Region 都要更新;
@@ -954,9 +953,13 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		oldRegion.EndKey = adminRequest.Split.SplitKey
 		m.regionRanges.ReplaceOrInsert(&regionItem{oldRegion})
 		m.regionRanges.ReplaceOrInsert(&regionItem{newRegion})
+		//这里忘记初始化重新修改了...一直导致3B过不去
+		m.regions[newRegion.Id] = newRegion
 		m.Unlock()
-		meta.WriteRegionState(wb, newRegion, rspb.PeerState_Normal)
+		d.SizeDiffHint = 0
+		d.ApproximateSize = new(uint64)
 		meta.WriteRegionState(wb, oldRegion, rspb.PeerState_Normal)
+		meta.WriteRegionState(wb, newRegion, rspb.PeerState_Normal)
 		//创建并注册
 		// If we create the peer actively, like bootstrap/split/merge region, we should
 		// use this function to create the peer. The region must contain the peer info
