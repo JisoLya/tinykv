@@ -59,7 +59,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	//2. 获取需要处理的ready状态
 	ready := d.RaftGroup.Ready()
-	log.Debugf("Has new [Ready : %+v]", ready)
 
 	//3. 调用 SaveReadyState 将 Ready 中需要持久化的内容保存到 badger。如果 Ready 中存在 snapshot，则应用它；
 	applySnapResult, err := d.peerStorage.SaveReadyState(&ready)
@@ -889,7 +888,6 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 	adminRequest := requests.AdminRequest
 	log.Debugf("ProcessAdminRequest [request: %+v]", adminRequest)
 	switch adminRequest.CmdType {
-	//todo 需要实现一下，这里的测试没有覆盖
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		//压缩日志的索引大于当前压缩日志的索引，直接更新一下truncatedState的状态
 		if adminRequest.CompactLog.CompactIndex > d.peerStorage.applyState.TruncatedState.Index {
@@ -946,7 +944,6 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 			Peers: newpeers,
 		}
 		//调用 createPeer() 在当前 Raftstore 上创建 Peer，并如同 maybeCreatePeer() 的那样进行注册与唤醒等操作;
-		p, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
 		//更新 storeMeta，分裂出的两个 Region 都要更新;
 		m := d.ctx.storeMeta
 		m.Lock()
@@ -965,11 +962,14 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		d.ApproximateSize = new(uint64)
 		meta.WriteRegionState(wb, oldRegion, rspb.PeerState_Normal)
 		meta.WriteRegionState(wb, newRegion, rspb.PeerState_Normal)
-		//创建并注册
+		// 创建并注册
 		// If we create the peer actively, like bootstrap/split/merge region, we should
 		// use this function to create the peer. The region must contain the peer info
 		// for this store.
-		npeer, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		npeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		if err != nil {
+			panic(err)
+		}
 		d.ctx.router.register(npeer)
 		d.ctx.router.send(newRegion.Id, message.Msg{Type: message.MsgTypeStart})
 		d.handleProposals(ent, &raft_cmdpb.RaftCmdResponse{
@@ -985,7 +985,8 @@ func (d *peerMsgHandler) processAdminRequest(ent *pb.Entry, requests *raft_cmdpb
 		//如果当前节点在 Raft 层是 Leader 的身份，则需要返回 Response，并且给 Scheduler 发一则心跳信息，表示该操作已完成
 		if d.IsLeader() {
 			d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-			d.notifyHeartbeatScheduler(newRegion, p)
+			d.notifyHeartbeatScheduler(d.Region(), d.peer)
+			d.notifyHeartbeatScheduler(newRegion, npeer)
 		}
 	}
 	return wb
