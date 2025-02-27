@@ -279,7 +279,36 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
-
+	//1. Check whether there is a region with the same Id in local storage.
+	//   If there is and at least one of the heartbeats’ conf_ver and version is less than its, this heartbeat region is stale
+	//2. If there isn’t, scan all regions that overlap with it.
+	//   The heartbeats’ conf_ver and version should be greater or equal than all of them, or the region is stale.
+	regionEpoch := region.GetRegionEpoch()
+	if regionEpoch == nil {
+		return errors.Errorf("region has no epoch")
+	}
+	curRegion := c.core.GetRegion(region.GetID())
+	if curRegion != nil {
+		if regionEpoch.Version < curRegion.GetRegionEpoch().Version || regionEpoch.ConfVer < curRegion.GetRegionEpoch().ConfVer {
+			return ErrRegionIsStale(region.GetMeta(), curRegion.GetMeta())
+		}
+	} else {
+		start, end := region.GetMeta().StartKey, region.GetMeta().EndKey
+		regions := c.ScanRegions(start, end, -1)
+		for _, re := range regions {
+			if regionEpoch.Version < re.GetRegionEpoch().Version || regionEpoch.ConfVer < re.GetRegionEpoch().GetConfVer() {
+				return errors.Errorf("stale heartbeat")
+			}
+		}
+	}
+	//If the Scheduler determines to update local storage according to this heartbeat, there are two things it should update: region tree and store status.
+	//You could use RaftCluster.core.PutRegion to update the region tree and use RaftCluster.core.UpdateStoreStatus
+	//to update related store’s status (such as leader count, region count, pending peer count… ).
+	err := c.putRegion(region)
+	if err != nil {
+		return err
+	}
+	c.updateStoreStatusLocked(region.GetID())
 	return nil
 }
 
