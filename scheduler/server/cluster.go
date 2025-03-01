@@ -283,14 +283,16 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	//   If there is and at least one of the heartbeats’ conf_ver and version is less than its, this heartbeat region is stale
 	//2. If there isn’t, scan all regions that overlap with it.
 	//   The heartbeats’ conf_ver and version should be greater or equal than all of them, or the region is stale.
-	regionEpoch := region.GetRegionEpoch()
+
+	regionMeta := region.GetMeta()
+	regionEpoch := regionMeta.GetRegionEpoch()
 	if regionEpoch == nil {
 		return errors.Errorf("region has no epoch")
 	}
-	curRegion := c.core.GetRegion(region.GetID())
+	curRegion := c.core.GetRegion(regionMeta.GetId())
 	if curRegion != nil {
 		if regionEpoch.Version < curRegion.GetRegionEpoch().Version || regionEpoch.ConfVer < curRegion.GetRegionEpoch().ConfVer {
-			return ErrRegionIsStale(region.GetMeta(), curRegion.GetMeta())
+			return ErrRegionIsStale(regionMeta, curRegion.GetMeta())
 		}
 	} else {
 		start, end := region.GetMeta().StartKey, region.GetMeta().EndKey
@@ -308,7 +310,10 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	if err != nil {
 		return err
 	}
-	c.updateStoreStatusLocked(region.GetID())
+	//这里需要修改每一个store的状态
+	for _, store := range c.GetStores() {
+		c.updateStoreStatusLocked(store.GetID())
+	}
 	return nil
 }
 

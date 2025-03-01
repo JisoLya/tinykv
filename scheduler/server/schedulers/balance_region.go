@@ -93,7 +93,6 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 	if len(suitableStore) == 0 || len(suitableStore) == 1 {
 		return nil
 	}
-
 	//2. The scheduler will try to find the region most suitableStore for moving in the store.
 	//First, it will try to select a pending region because pending may mean the disk is overloaded.
 	//If there isn’t a pending region, it will try to find a follower region. If it still cannot pick out one region, it will try to pick leader regions.
@@ -127,6 +126,12 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 		log.Error("Can not pick up a source region")
 		return nil
 	}
+	//判断region的store数量
+	//这里意味着，如果region的所在的store数量小于最大副本数，此时意味着系统的容灾能力并没有达到期望，
+	//此时应该直接创建一个新的副本而不是将副本移动
+	if len(region.GetStoreIds()) < cluster.GetMaxReplicas() {
+		return nil
+	}
 	//3. After you pick up one region to move, the Scheduler will select a store as the target.
 	//Actually, the Scheduler will select the store with the smallest region size. Then the
 	//Scheduler will judge whether this movement is valuable, by checking the difference between region sizes of the original store and the target store.
@@ -151,13 +156,13 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 		log.Error("Diff not big enough")
 		return nil
 	}
-	newPeer, err := cluster.AllocPeer(target.GetID())
-	if err != nil {
-		return nil
-	}
-	op, err := operator.CreateMovePeerOperator("balance-region", cluster, region, operator.OpBalance, from.GetID(), target.GetID(), newPeer.GetId())
-	if err != nil {
-		return nil
-	}
+	newPeer, _ := cluster.AllocPeer(target.GetID())
+	//if err != nil {
+	//	return nil
+	//}
+	op, _ := operator.CreateMovePeerOperator("balance-region", cluster, region, operator.OpBalance, from.GetID(), target.GetID(), newPeer.GetId())
+	//if err != nil {
+	//	return nil
+	//}
 	return op
 }
