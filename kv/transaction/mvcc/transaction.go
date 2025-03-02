@@ -1,6 +1,7 @@
 package mvcc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/util/codec"
@@ -54,7 +55,21 @@ func (txn *MvccTxn) PutWrite(key []byte, ts uint64, write *Write) {
 // if an error occurs during lookup.
 func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	// Your Code Here (4A).
-	return nil, nil
+	//列簇lock可以利用user key来访问
+	iter := txn.Reader.IterCF(engine_util.CfLock)
+	iter.Seek(key)
+	if !iter.Valid() {
+		return nil, nil
+	}
+	val, err := iter.Item().ValueCopy(nil)
+	if err != nil {
+		return nil, err
+	}
+	l, err := ParseLock(val)
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 // PutLock adds a key/lock to this transaction.
@@ -81,8 +96,30 @@ func (txn *MvccTxn) DeleteLock(key []byte) {
 // I.e., the most recent value committed before the start of this transaction.
 func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	// Your Code Here (4A).
-	txn.Reader.IterCF()
-	return nil, nil
+	//首先需要获取到最近一次提交的记录
+	writeIter := txn.Reader.IterCF(engine_util.CfWrite)
+	//找到最近的key,由于key是按升序提交的，timestamp是降序，那么获取的第一个就是最新的
+	writeIter.Seek(EncodeKey(key, txn.StartTS))
+	if !writeIter.Valid() {
+		return nil, nil
+	}
+	wItem := writeIter.Item()
+	gotKey := DecodeUserKey(wItem.KeyCopy(nil))
+	if !bytes.Equal(gotKey, key) {
+		return nil, nil
+	}
+	//查看这个put的值,如果中间是delete，直接返回
+	wValue, err := wItem.ValueCopy(nil)
+	if err != nil {
+		return nil, err
+	}
+	w, err := ParseWrite(wValue)
+	if err != nil || w.Kind != WriteKindPut {
+		return nil, err
+	}
+	//不是delete，那么可以返回
+	value, err := txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, w.StartTS))
+	return value, err
 }
 
 // PutValue adds a key/value write to this transaction.
@@ -110,6 +147,29 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 // write's commit timestamp, or an error.
 func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
+	iterCF := txn.Reader.IterCF(engine_util.CfWrite)
+	for iterCF.Seek(EncodeKey(key, TsMax)); iterCF.Valid(); iterCF.Next() {
+		item := iterCF.Item()
+		//需要比较key和timestamp
+		gotKey := DecodeUserKey(item.KeyCopy(nil))
+		if !bytes.Equal(gotKey, key) {
+			return nil, 0, nil
+		}
+		wValue, err := item.ValueCopy(nil)
+		if err != nil || wValue == nil {
+			return nil, 0, err
+		}
+		wr, err := ParseWrite(wValue)
+		if err != nil {
+			return nil, 0, err
+		}
+		if wr.StartTS == txn.StartTS {
+			return wr, decodeTimestamp(item.Key()), nil
+		}
+		if wr.StartTS < txn.StartTS {
+			break
+		}
+	}
 	return nil, 0, nil
 }
 
@@ -117,7 +177,25 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 // write's commit timestamp, or an error.
 func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
-	return nil, 0, nil
+	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	iter.Seek(EncodeKey(key, TsMax))
+	if !iter.Valid() {
+		return nil, 0, nil
+	}
+	//传进来的其他key不能迭代
+	gotKey := DecodeUserKey(iter.Item().KeyCopy(nil))
+	if !bytes.Equal(gotKey, key) {
+		return nil, 0, nil
+	}
+	valueCopy, err := iter.Item().ValueCopy(nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	write, err := ParseWrite(valueCopy)
+	if err != nil {
+		return nil, 0, err
+	}
+	return write, decodeTimestamp(iter.Item().KeyCopy(nil)), nil
 }
 
 // EncodeKey encodes a user key and appends an encoded timestamp to a key. Keys and timestamps are encoded so that
