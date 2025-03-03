@@ -185,7 +185,71 @@ func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest
 
 func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	//1. 通过 Latches 上锁对应的 key。
+	resp := &kvrpcpb.CommitResponse{}
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		if regionErr, ok := err.(*raft_storage.RegionError); ok {
+			resp.RegionError = regionErr.RequestErr
+			return resp, nil
+		}
+		return nil, err
+	}
+	txn := mvcc.MvccTxn{
+		StartTS: req.StartVersion,
+		Reader:  reader,
+	}
+	server.Latches.WaitForLatches(req.Keys)
+	defer server.Latches.ReleaseLatches(req.Keys)
+	//2. 尝试获取每一个 key 的 Lock，并检查 Lock.StartTs 和当前事务的 startTs 是否一致，不一致直接取消。因为存在这种情况，客户端 Prewrite 阶段耗时过长，Lock 的 TTL 已经超时，
+	//被其他事务回滚，所以当客户端要 commit 的时候，需要先检查一遍 Lock。
+	for _, key := range req.Keys {
+		lock, err := txn.GetLock(key)
+		if err != nil {
+			return resp, err
+		}
+		if lock == nil {
+			//检查一下是否是被回滚了
+			currentWrite, _, err := txn.CurrentWrite(key)
+			if err != nil {
+				return resp, err
+			}
+			if currentWrite == nil {
+				continue
+			}
+			if currentWrite.StartTS == req.StartVersion && currentWrite.Kind == mvcc.WriteKindRollback {
+				resp.Error = &kvrpcpb.KeyError{
+					Retryable: "true",
+				}
+				return resp, nil
+			}
+			continue
+		}
+		//lock不为空
+		if lock.Ts != req.StartVersion {
+			resp.Error = &kvrpcpb.KeyError{
+				Retryable: "true",
+			}
+			return resp, nil
+		}
+
+	}
+	for _, key := range req.Keys {
+		lock, _ := txn.GetLock(key)
+		if lock == nil {
+			continue
+		}
+		txn.PutWrite(key, req.CommitVersion, &mvcc.Write{
+			StartTS: req.StartVersion,
+			Kind:    lock.Kind,
+		})
+		txn.DeleteLock(key)
+	}
+	err = server.storage.Write(req.Context, txn.Writes())
+	if err != nil {
+		return resp, err
+	}
+	return resp, nil
 }
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {

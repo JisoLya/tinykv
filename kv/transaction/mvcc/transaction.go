@@ -56,20 +56,24 @@ func (txn *MvccTxn) PutWrite(key []byte, ts uint64, write *Write) {
 func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	// Your Code Here (4A).
 	//列簇lock可以利用user key来访问
-	iter := txn.Reader.IterCF(engine_util.CfLock)
-	iter.Seek(key)
-	if !iter.Valid() {
+	//这里不推荐用iterator来访问，如果使用了seek方法，还需要检查一下或得到的key是否与预期的相同
+
+	//因为迭代器的Seek()方法会
+	//定位到下一个更大的 key
+	//如果存在比目标 key 大的键（按字典序升序排列），迭代器会定位到 第一个大于 key 的键值对。
+	//例如：若存储中有 key1=100, key3=300，调用 Seek(key2)，迭代器会指向 key3。
+	//若没有更大的 key，迭代器变为无效状态
+	//如果所有存储的 key 均小于目标 key，则迭代器会定位到 无效位置，此时调用 Valid() 方法会返回 false。
+	reader := txn.Reader
+	value, err := reader.GetCF(engine_util.CfLock, key)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := ParseLock(value)
+	if err != nil || lock == nil {
 		return nil, nil
 	}
-	val, err := iter.Item().ValueCopy(nil)
-	if err != nil {
-		return nil, err
-	}
-	l, err := ParseLock(val)
-	if err != nil {
-		return nil, err
-	}
-	return l, nil
+	return lock, err
 }
 
 // PutLock adds a key/lock to this transaction.
