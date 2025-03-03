@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 
 	"github.com/pingcap-incubator/tinykv/kv/coprocessor"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
@@ -50,7 +52,46 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 // Transactional API.
 func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	resp := &kvrpcpb.GetResponse{}
+	reader, err := server.storage.Reader(req.Context)
+	var regionErr *raft_storage.RegionError
+	if errors.As(err, &regionErr) {
+		resp.RegionError = regionErr.RequestErr
+		return resp, nil
+	}
+	//创建一个新的读事务
+	txn := mvcc.MvccTxn{
+		StartTS: req.Version,
+		Reader:  reader,
+	}
+	//确保总能得到最新的已提交的数据
+	lock, err := txn.GetLock(req.Key)
+	if errors.As(err, &regionErr) {
+		resp.RegionError = regionErr.RequestErr
+		return resp, nil
+	}
+	//KvGet利用给定的时间戳来从Database中读取值 如果这个key正在被其他的KvGet读取并上锁了,返回锁的信息
+	if lock != nil && lock.Ts <= req.Version {
+		resp.Error = &kvrpcpb.KeyError{
+			Locked: &kvrpcpb.LockInfo{
+				PrimaryLock: lock.Primary,
+				LockVersion: lock.Ts,
+				Key:         req.Key,
+				LockTtl:     lock.Ttl,
+			},
+		}
+		return resp, nil
+	}
+	value, err := txn.GetValue(req.Key)
+	if errors.As(err, &regionErr) {
+		resp.RegionError = regionErr.RequestErr
+		return resp, nil
+	}
+	if value == nil {
+		resp.NotFound = true
+	}
+	resp.Value = value
+	return resp, nil
 }
 
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
