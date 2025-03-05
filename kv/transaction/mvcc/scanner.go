@@ -60,7 +60,6 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 	//移动到下一个
 	scan.Iterator.Next()
 	scan.LastRead = userKey
-
 	var nextItem engine_util.DBItem
 	for {
 		if !scan.Iterator.Valid() {
@@ -83,12 +82,12 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 					scan.Iterator.Next()
 					continue
 				} else {
+					//如果读到的是一个put并且还和上一次读到的不一样，还是有效的，那么下一次调用Next的时候得到的就是下一个有效的值。
 					break
 				}
 			}
-			//如果读到了一个delete
 		} else {
-			//都要跳过
+			//不符合事务可见的都要跳过
 			scan.Iterator.Next()
 		}
 	}
