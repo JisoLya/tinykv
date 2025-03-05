@@ -3,12 +3,13 @@ package server
 import (
 	"context"
 	"errors"
-	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
-
 	"github.com/pingcap-incubator/tinykv/kv/coprocessor"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/storage/raft_storage"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
+	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"github.com/pingcap-incubator/tinykv/log"
 	coppb "github.com/pingcap-incubator/tinykv/proto/pkg/coprocessor"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/tinykvpb"
@@ -254,7 +255,42 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.ScanResponse{}
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return resp, err
+	}
+	cf := reader.IterCF(engine_util.CfWrite)
+	log.Infof("All Item:")
+	for cf.Seek(nil); cf.Valid(); cf.Next() {
+		mvcc.PrintAnItem(cf.Item())
+	}
+	log.Infof("end")
+	txn := &mvcc.MvccTxn{
+		StartTS: req.Version,
+		Reader:  reader,
+	}
+	scanner := mvcc.NewScanner(req.StartKey, txn)
+	var pair []*kvrpcpb.KvPair
+	var counter uint32
+	for counter = 0; counter < req.Limit; {
+		if !scanner.Iterator.Valid() {
+			break
+		}
+		key, val, err := scanner.Next()
+		if err != nil {
+			continue
+		}
+		if val != nil || len(val) == 0 {
+			pair = append(pair, &kvrpcpb.KvPair{
+				Key:   key,
+				Value: val,
+			})
+			counter++
+		}
+	}
+	resp.Pairs = pair
+	return resp, nil
 }
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
