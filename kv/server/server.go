@@ -371,7 +371,7 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 	//1. 遍历所有的key，获取write如果有commit那么拒绝回滚
 	//2. 如果有已经回滚的，跳过执行下一个
 	//3. 利用getLock获取Lock，如果有lock.ts != txn.StartTs，此时说明有其他事务上锁了，这时仍要打上rollback标签
-	// 因为如果一个事务的pre-write时间过长而且lock已经超时
+	//   因为如果一个事务的pre-write时间过长而且lock已经超时
 	for _, key := range req.Keys {
 		currentWrite, _, err := txn.CurrentWrite(key)
 		if err != nil {
@@ -391,6 +391,15 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 		//有锁信息但是没有正确写入日志的
 		getLock, err := txn.GetLock(key)
 		//todo question
+		/*
+			1. 在某些情况下，一个事务回滚之后，TinyKV 仍然有可能收到同一个事务的 prewrite 请求。比如，可能是网络原因导致该请求在网络上滞留比较久；
+			或者由于 prewrite 的请求是并行发送的，客户端的一个线程收到了冲突的响应之后取消其它线程发送请求的任务并调用 rollback，此时其中一个线程
+			的 prewrite 请求刚好刚发出去。也就是说，被回滚的事务，它的 prewrite 可能比 rollback 还要后到。
+			2. 如果 rollback 发现 key 被其他事务 lock 了，并且不做任何处理。那么假设在 prewrite 到来时，这个 lock 已经没了，由于没有 rollback 标记，这个 prewrite 就会执行成功，
+			则回滚操作就失败了。如果有 rollback 标记，那么 prewrite 看到它之后就会立刻放弃，从而不影响回滚的效果。
+			3. 另外，打了 rollback 标记是没有什么影响的，即使没有上述网络问题。因为 rollback 是指向对应 start_ts 的 default 的，也就是该事务写入的 value，
+			它并不会影响其他事务的写入情况，因此不管它就行。
+		*/
 		if getLock.Ts != req.StartVersion {
 			txn.PutWrite(key, req.StartVersion, &mvcc.Write{
 				StartTS: req.StartVersion,
