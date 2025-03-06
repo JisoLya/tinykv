@@ -295,7 +295,66 @@ func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrp
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	reader, err := server.storage.Reader(req.Context)
+	resp := &kvrpcpb.CheckTxnStatusResponse{
+		Action: kvrpcpb.Action_NoAction,
+	}
+	if err != nil {
+		return resp, err
+	}
+	txn := mvcc.MvccTxn{
+		StartTS: req.LockTs,
+		Reader:  reader,
+	}
+	currentWrite, ts, err := txn.CurrentWrite(req.PrimaryKey)
+	if err != nil {
+		return resp, err
+	}
+	if currentWrite != nil && currentWrite.Kind != mvcc.WriteKindRollback {
+		resp.CommitVersion = ts
+		return resp, nil
+	}
+	lock, err := txn.GetLock(req.PrimaryKey)
+	if err != nil {
+		return resp, err
+	}
+	if lock == nil {
+		//这时表示已经被回滚了
+		if currentWrite != nil && currentWrite.Kind == mvcc.WriteKindRollback {
+			return resp, nil
+		} else {
+			//write中读取不到数据的情况下，说明这个数据已经被回滚，写入一下
+			txn.PutWrite(req.PrimaryKey, req.LockTs, &mvcc.Write{
+				StartTS: req.LockTs,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			err := server.storage.Write(req.Context, txn.Writes())
+			if err != nil {
+				return resp, err
+			}
+			resp.Action = kvrpcpb.Action_LockNotExistRollback
+			return resp, nil
+		}
+	}
+	currentTs := req.CurrentTs
+	lockTs := lock.Ts
+	//锁超时需要清除,并且写入回滚数据
+	if currentTs > lockTs && mvcc.PhysicalTime(currentTs)-mvcc.PhysicalTime(lockTs) > lock.Ttl {
+		//删除暂存的数据
+		txn.DeleteLock(req.PrimaryKey)
+		txn.DeleteValue(req.PrimaryKey)
+		//写入一个write
+		txn.PutWrite(req.PrimaryKey, req.LockTs, &mvcc.Write{
+			StartTS: req.LockTs,
+			Kind:    mvcc.WriteKindRollback,
+		})
+		err := server.storage.Write(req.Context, txn.Writes())
+		if err != nil {
+			return resp, err
+		}
+		resp.Action = kvrpcpb.Action_TTLExpireRollback
+	}
+	return resp, nil
 }
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
