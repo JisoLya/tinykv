@@ -359,7 +359,60 @@ func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnS
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.BatchRollbackResponse{}
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return resp, err
+	}
+	txn := mvcc.MvccTxn{
+		StartTS: req.StartVersion,
+		Reader:  reader,
+	}
+	//1. 遍历所有的key，获取write如果有commit那么拒绝回滚
+	//2. 如果有已经回滚的，跳过执行下一个
+	//3. 利用getLock获取Lock，如果有lock.ts != txn.StartTs，此时说明有其他事务上锁了，这时仍要打上rollback标签
+	// 因为如果一个事务的pre-write时间过长而且lock已经超时
+	for _, key := range req.Keys {
+		currentWrite, _, err := txn.CurrentWrite(key)
+		if err != nil {
+			return resp, err
+		}
+		if currentWrite != nil {
+			if currentWrite.Kind == mvcc.WriteKindPut {
+				// already commit
+				resp.Error = &kvrpcpb.KeyError{Abort: "true"}
+				return resp, nil
+			}
+			if currentWrite.Kind == mvcc.WriteKindRollback {
+				continue
+			}
+		}
+		//
+		//有锁信息但是没有正确写入日志的
+		getLock, err := txn.GetLock(key)
+		//todo question
+		if getLock.Ts != req.StartVersion {
+			txn.PutWrite(key, req.StartVersion, &mvcc.Write{
+				StartTS: req.StartVersion,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			continue
+		}
+		if err != nil {
+			return resp, err
+		}
+		txn.DeleteLock(key)
+		txn.DeleteValue(key)
+		txn.PutWrite(key, req.StartVersion, &mvcc.Write{
+			StartTS: req.StartVersion,
+			Kind:    mvcc.WriteKindRollback,
+		})
+	}
+	err = server.storage.Write(req.Context, txn.Writes())
+	if err != nil {
+		return resp, err
+	}
+	return resp, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
