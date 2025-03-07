@@ -489,5 +489,3 @@ func (server *Server) Coprocessor(_ context.Context, req *coppb.Request) (*coppb
 	}
 	return nil, nil
 }
-
-//
