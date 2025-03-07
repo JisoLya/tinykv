@@ -9,7 +9,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/log"
 	coppb "github.com/pingcap-incubator/tinykv/proto/pkg/coprocessor"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/tinykvpb"
@@ -260,12 +259,6 @@ func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrp
 	if err != nil {
 		return resp, err
 	}
-	cf := reader.IterCF(engine_util.CfWrite)
-	log.Infof("All Item:")
-	for cf.Seek(nil); cf.Valid(); cf.Next() {
-		mvcc.PrintAnItem(cf.Item())
-	}
-	log.Infof("end")
 	txn := &mvcc.MvccTxn{
 		StartTS: req.Version,
 		Reader:  reader,
@@ -387,10 +380,11 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 				continue
 			}
 		}
-		//
 		//有锁信息但是没有正确写入日志的
 		getLock, err := txn.GetLock(key)
-		//todo question
+		if err != nil {
+			return resp, err
+		}
 		/*
 			1. 在某些情况下，一个事务回滚之后，TinyKV 仍然有可能收到同一个事务的 prewrite 请求。比如，可能是网络原因导致该请求在网络上滞留比较久；
 			或者由于 prewrite 的请求是并行发送的，客户端的一个线程收到了冲突的响应之后取消其它线程发送请求的任务并调用 rollback，此时其中一个线程
@@ -400,15 +394,12 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 			3. 另外，打了 rollback 标记是没有什么影响的，即使没有上述网络问题。因为 rollback 是指向对应 start_ts 的 default 的，也就是该事务写入的 value，
 			它并不会影响其他事务的写入情况，因此不管它就行。
 		*/
-		if getLock.Ts != req.StartVersion {
+		if getLock != nil && getLock.Ts != req.StartVersion {
 			txn.PutWrite(key, req.StartVersion, &mvcc.Write{
 				StartTS: req.StartVersion,
 				Kind:    mvcc.WriteKindRollback,
 			})
 			continue
-		}
-		if err != nil {
-			return resp, err
 		}
 		txn.DeleteLock(key)
 		txn.DeleteValue(key)
@@ -426,7 +417,57 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.ResolveLockResponse{}
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return resp, err
+	}
+	iterator := reader.IterCF(engine_util.CfLock)
+	var keys [][]byte
+	for ; iterator.Valid(); iterator.Next() {
+		item := iterator.Item()
+		valueCopy, err := item.ValueCopy(nil)
+		if err != nil {
+			return resp, err
+		}
+		lockInfo, err := mvcc.ParseLock(valueCopy)
+		if err != nil {
+			return resp, err
+		}
+		//找到开始时间等于当前请求时间的锁
+		if lockInfo.Ts == req.StartVersion {
+			key := item.KeyCopy(nil)
+			keys = append(keys, key)
+		}
+	}
+	//根据commit决定统一回滚或者是提交
+	if req.CommitVersion == 0 {
+		//回滚
+		rollBackResp, err := server.KvBatchRollback(nil, &kvrpcpb.BatchRollbackRequest{
+			Context:      req.Context,
+			StartVersion: req.StartVersion,
+			Keys:         keys,
+		})
+		if err != nil {
+			return resp, err
+		}
+		resp.RegionError = rollBackResp.RegionError
+		resp.Error = rollBackResp.Error
+	} else {
+		//提交
+		commitResp, err := server.KvCommit(nil, &kvrpcpb.CommitRequest{
+			Context:       req.Context,
+			StartVersion:  req.StartVersion,
+			Keys:          keys,
+			CommitVersion: req.CommitVersion,
+		})
+		if err != nil {
+			return resp, err
+		}
+		resp.RegionError = commitResp.RegionError
+		resp.Error = commitResp.Error
+	}
+	return resp, nil
 }
 
 // SQL push down commands.

@@ -3,7 +3,6 @@ package mvcc
 import (
 	"bytes"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/log"
 )
 
 // Scanner is used for reading multiple sequential key/value pairs from the storage layer. It is aware of the implementation
@@ -102,11 +101,11 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 	return userKey, val, nil
 }
 
-func PrintAnItem(item engine_util.DBItem) {
-	value, _ := item.Value()
-	key := item.Key()
-	userkey := DecodeUserKey(key)
-	ts := decodeTimestamp(key)
-	write, _ := ParseWrite(value)
-	log.Infof("user key: %+v, ts: %+v,read wirte:%+v, kind: %s", userkey, ts, write, write.Kind)
-}
+//func PrintAnItem(item engine_util.DBItem) {
+//	value, _ := item.Value()
+//	key := item.Key()
+//	userkey := DecodeUserKey(key)
+//	ts := decodeTimestamp(key)
+//	write, _ := ParseWrite(value)
+//	log.Infof("user key: %+v, ts: %+v,read wirte:%+v, kind: %s", userkey, ts, write, write.Kind)
+//}
